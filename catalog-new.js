@@ -291,5 +291,7 @@ CATALOG_ROWS.push(
 ["the-body-keeps-the-score--van-der-kolk","The Body Keeps the Score","Bessel van der Kolk","Nonfiction","Psychology",464,2014,"r","N",1,1,"","truestory science emotional","A psychiatrist on how trauma reshapes the brain and body, and what helps.","Clinics and labs",""],
 ["mindset--dweck","Mindset","Carol S. Dweck","Nonfiction","Psychology",276,2006,"r","N",1,1,"","ideas science sports","Why believing you can grow your abilities changes how you learn, work and compete.","Schools, teams and offices",""],
 ["deep-work--newport","Deep Work","Cal Newport","Nonfiction","Ideas",296,2016,"r","N",1,1,"","ideas science","The case for focused, distraction-free work and how to train for it.","Offices and the attention economy",""],
-["never-split-the-difference--voss","Never Split the Difference","Chris Voss & Tahl Raz","Nonfiction","Business",288,2016,"m","N",2,2,"","truestory ideas crime","A former FBI hostage negotiator's tactics for any negotiation.","Kidnappings, standoffs and boardrooms",""]
+["never-split-the-difference--voss","Never Split the Difference","Chris Voss & Tahl Raz","Nonfiction","Business",288,2016,"m","N",2,2,"","truestory ideas crime","A former FBI hostage negotiator's tactics for any negotiation.","Kidnappings, standoffs and boardrooms",""],
+/* ---- From John's Goodreads export ---- */
+["the-windup-bird-and-tuesday-s-women--murakami","The Windup Bird and Tuesday's Women","Haruki Murakami","Literary","Short story",25,1986,"f","N",2,1,"","ideas mystery funny narrator","An out-of-work man cooking spaghetti takes a strange phone call and goes looking for his missing cat: the seed of The Wind-Up Bird Chronicle. Also in The Elephant Vanishes.","Tokyo suburbs",""]
 );

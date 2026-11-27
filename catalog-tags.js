@@ -1315,3 +1315,9 @@ CATALOG_ROWS.forEach(r=>{ const x = EXTRA[r[0]]; if(x) r[12] = (r[12]+" "+x).tri
 const LOVE = new Set(["pride-and-prejudice--austen","jane-eyre--bronte","wuthering-heights--bronte","persuasion--austen","emma--austen","rebecca--maurier","normal-people--rooney","the-time-traveler-s-wife--niffenegger","love-in-the-time-of-cholera--marquez","atonement--mcewan","the-princess-bride--goldman","gone-with-the-wind--mitchell","the-thorn-birds--mccullough","doctor-zhivago--pasternak","the-english-patient--ondaatje","a-farewell-to-arms--hemingway","cold-mountain--frazier","the-night-circus--morgenstern","tress-of-the-emerald-sea--sanderson","the-house-in-the-cerulean-sea--klune","the-age-of-innocence--wharton","anna-karenina--tolstoy","the-great-gatsby--fitzgerald","heart-the-lover--king","the-invisible-life-of-addie-larue--schwab","the-ministry-of-time--bradley","the-bear-and-the-nightingale--arden","the-song-of-achilles--miller","the-unbearable-lightness-of-being--kundera","brooklyn--toibin","the-remains-of-the-day--ishiguro","less--greer","tomorrow-and-tomorrow-and-tomorrow--zevin"]);
 CATALOG_ROWS.forEach(r=>{ if(LOVE.has(r[0]) && !r[12].split(" ").includes("romance")) r[12] = (r[12]+" romance").trim(); });
 })();
+
+/* Corrections to facts in catalog.js, checked against publishers (Nov 2026). Index: 5 = pages, 6 = year first published. */
+(function(){
+const FIX = {"london-falling--keefe": {5:384, 6:2026}};
+CATALOG_ROWS.forEach(r=>{ const f = FIX[r[0]]; if(f) for(const k in f) r[k] = f[k]; });
+})();

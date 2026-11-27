@@ -48,6 +48,7 @@ function cleanEntry(e){
   ["start","fin","stop"].forEach(k=>{ const d=isDate(e[k]); if(d) out[k]=d; });
   if(e.note) out.note = str(e.note, 4000);
   if(FORMATS[e.fmt]) out.fmt = e.fmt;
+  if(isDate(e.gra)) out.gra = e.gra;
   const pg = numIn(e.page,0,20000); if(pg!==null) out.page = Math.round(pg);
   const rc = numIn(e.reads,1,99); if(rc) out.reads = Math.round(rc);
   return out.st ? out : null;
@@ -995,7 +996,8 @@ function renderCleanup(){
   const sec = (title, why, items, f, max=25) => items.length ? `<div class="panel block"><div class="resultbar"><h3>${title}</h3><span class="muted small">${items.length}</span></div><p class="muted small">${why}</p>${items.slice(0,max).map(f).join("")}${items.length>max?`<p class="muted small">Showing ${max}. Fix these and the rest appear.</p>`:""}</div>` : "";
   $("#v-cleanup").innerHTML = `<div class="block"><div class="eyebrow">Clean up</div><h2>Tidy your shelf</h2><p class="lede">${total?`${total} thing${total===1?"":"s"} to look at. Each one makes your stats, year in review or recommendations more accurate.`:"Everything's in order. Nothing to fix."}</p></div>
   ${sec("Did you mean…?","These imported books look like catalog books under a slightly different title. Matching them gives you fit scores, covers and full details.", I.sugg, ([c,t])=>`<div class="crow">${coverEl(CATMAP[t])}<span class="ct2"><span class="muted small">You have</span> <b>${esc(S.custom[c].t)}</b> <span class="muted small">by ${esc(S.custom[c].a)}</span><br><span class="muted small">Catalog has</span> <b>${esc(CATMAP[t].t)}</b> <span class="muted small">by ${esc(CATMAP[t].a)}${CATMAP[t].y?`, ${CATMAP[t].y}`:""}</span></span><span class="cc"><button class="btn" data-act="sugyes" data-c="${esc(c)}">Same book</button><button class="btn quiet" data-act="sugno" data-c="${esc(c)}">Different</button></span></div>`)}
-  ${sec("No finish date","Books only count toward your yearly goal, year in review and reading pace once they have a finish date. A rough guess is fine.", I.nodate, b=>row(b, `<input type="date" data-date="fin" data-id="${esc(b.id)}" aria-label="Finish date for ${esc(b.t)}">`))}
+  ${(()=>{ const g = I.nodate.filter(b=>entry(b.id).gra); return g.length>=2 ? `<div class="notice">${g.length} of these have the date you added them on Goodreads. If that's roughly when you finished them, <button class="btn ghost" data-act="usegra">Use those dates</button> <span class="muted small">(you can still change any of them after)</span></div>` : ""; })()}
+  ${sec("No finish date","Books only count toward your yearly goal, year in review and reading pace once they have a finish date. A rough guess is fine.", I.nodate, b=>row(b, `<input type="date" data-date="fin" data-id="${esc(b.id)}" aria-label="Finish date for ${esc(b.t)}"${entry(b.id).gra?` title="Added on Goodreads ${dateTxt(entry(b.id).gra)}"`:""}>${entry(b.id).gra?`<span class="muted small">Added on Goodreads ${dateTxt(entry(b.id).gra)}</span>`:""}`))}
   ${sec("Not rated","Ratings are what recommendations learn from. Tap a star; tap again for a half.", I.norate, b=>row(b, ratingSelect(b.id, null, "data-rate", "Rating")))}
   ${sec("No format","Print, ebook or audiobook. Optional, but it feeds the format chart and your year in review.", I.nofmt, b=>row(b, `<div class="chips">${Object.entries(FORMATS).map(([k,l])=>`<button class="chip" data-fmt="${k}" data-id="${esc(b.id)}">${l}</button>`).join("")}</div>`))}
   ${I.sparse.length?`<div class="panel block"><div class="resultbar"><h3>Missing details</h3><span class="muted small">${I.sparse.length}</span></div><p class="muted small">Books from outside the catalog need a few quick details (genre, pace, themes) to count fully toward recommendations.</p><div class="actions"><button class="btn ghost" data-act="showsparse">Fill them in</button>${Object.values(S.custom).some(b=>!b.lane)?`<button class="btn ghost" data-act="olfill">Look up genres on Open Library</button>`:""}</div><p class="muted small" id="olfill-msg"></p></div>`:""}`;
@@ -1072,7 +1074,7 @@ function renderProfile(){
       <p class="muted small">Favorites: ${P.favorites.map(book).filter(Boolean).map(b=>esc(b.t)).join(", ")||"none yet"}. Mark favorites from any book you've read.</p>
     </div>
     <div class="panel block"><h3>Import from Goodreads</h3>
-      <p class="small">On goodreads.com (desktop), go to <b>My Books → Import and export → Export library</b>, download the CSV, then choose it here. Ratings, read dates and shelves come across. Running it again updates books instead of duplicating them.</p>
+      <p class="small">On goodreads.com (desktop), go to <b>My Books → Import and export → Export library</b>, download the CSV, then choose it here. Ratings, read dates, formats, reviews and shelves come across. Running it again is safe: books already on your shelf keep everything you've set, and only blank details get filled in.</p>
       <input type="file" accept=".csv,text/csv" data-grfile="1" aria-label="Goodreads export">
       <p class="muted small" data-grmsg="1">${esc(GRMSG)}</p>
       ${customs.some(b=>!b.lane)?`<button class="btn ghost" data-act="olfill">Look up genres on Open Library for ${customs.filter(b=>!b.lane).length} imported books</button><p class="muted small" id="olfill-msg"></p>`:""}
@@ -1229,7 +1231,7 @@ function importGoodreads(text){
   const h = rows[0].map(x=>x.trim()), col = n => h.indexOf(n);
   if(["Title","Author","My Rating","Exclusive Shelf"].some(n=>col(n)<0)) return null;
   const num = v => { const x=parseFloat(v); return isFinite(x)?x:null; };
-  let matched=0, added=0, n=0;
+  let matched=0, added=0, n=0, kept=0;
   rows.slice(1).forEach(r=>{
     const t = r[col("Title")], a = r[col("Author")]; if(!t) return; n++;
     const shelf = r[col("Exclusive Shelf")], st = shelf==="read"?"read":shelf==="currently-reading"?"reading":shelf==="to-read"?"want":/^(dnf|did-not-finish|abandoned|didnt-finish|did-not-finish-dnf)$/i.test(shelf||"")?"dnf":null; if(!st) return;
@@ -1244,21 +1246,23 @@ function importGoodreads(text){
     }
     const my = num(r[col("My Rating")]), dr = (r[col("Date Read")]||"").replace(/\//g,"-"), avg = num(r[col("Average Rating")]);
     if(avg && !b.cat) b.gr = avg;
-    const e = {...(S.shelf[b.id]||{at:today()}), st};
-    if(st==="read"){ if(my) e.r = my; if(/^\d{4}-\d{2}-\d{2}$/.test(dr)) e.fin = dr; }
-    if(st==="dnf" && my) e.dr = my;
+    // Only fills gaps. A book already on this shelf keeps its status, rating, dates and notes; blanks get filled.
+    const had = S.shelf[b.id], e = had ? {...had} : {at:today(), st};
+    if(had) kept++;
+    if(e.st==="read"){ if(my && !e.r) e.r = my; if(/^\d{4}-\d{2}-\d{2}$/.test(dr) && !e.fin) e.fin = dr; }
+    if(e.st==="dnf" && my && !e.dr) e.dr = my;
     const bind = (r[col("Binding")]||"").toLowerCase();
-    if(!e.fmt && bind) e.fmt = /audio|audible|mp3|cd/.test(bind) ? "audio" : /kindle|ebook|e-book|nook|epub|digital/.test(bind) ? "ebook" : /hardcover|paperback|mass market|board|library binding|leather/.test(bind) ? "print" : undefined;
+    if(e.st!=="want" && !e.fmt && bind) e.fmt = /audio|audible|mp3|cd/.test(bind) ? "audio" : /kindle|ebook|e-book|nook|epub|digital/.test(bind) ? "ebook" : /hardcover|paperback|mass market|board|library binding|leather/.test(bind) ? "print" : undefined;
     if(!e.fmt) delete e.fmt;
-    const reads = num(r[col("Read Count")]); if(reads>1) e.reads = Math.min(99, reads);
-    const dAdded = (r[col("Date Added")]||"").replace(/\//g,"-"); if(/^\d{4}-\d{2}-\d{2}$/.test(dAdded)) e.at = dAdded;
+    const reads = num(r[col("Read Count")]); if(reads>1 && !e.reads) e.reads = Math.min(99, reads);
+    const dAdded = (r[col("Date Added")]||"").replace(/\//g,"-"); if(/^\d{4}-\d{2}-\d{2}$/.test(dAdded)){ if(!had) e.at = dAdded; if(!e.gra) e.gra = dAdded; }
     const rev = (r[col("My Review")]||"").replace(/<br\s*\/?>/gi,"\n").replace(/<[^>]+>/g,"").trim(); if(rev && !e.note) e.note = rev.slice(0,4000);
     const shelves = (r[col("Bookshelves")]||"").toLowerCase();
-    if(st==="read" && /(^|,\s*)(favou?rites?|all-time-favou?rites?|favou?rite-books|best-books)(\s*,|$)/.test(shelves) && !S.profile.favorites.includes(b.id)) S.profile.favorites.push(b.id);
+    if(!had && st==="read" && /(^|,\s*)(favou?rites?|all-time-favou?rites?|favou?rite-books|best-books)(\s*,|$)/.test(shelves) && !S.profile.favorites.includes(b.id)) S.profile.favorites.push(b.id);
     S.shelf[b.id] = e;
   });
   adoptCatalogBooks(); save(); changed();
-  return {n, matched, added, suggested:Object.keys(S.suggest).length};
+  return {n, matched, added, kept, suggested:Object.keys(S.suggest).length};
 }
 async function olFill(){
   const todo = Object.values(S.custom).filter(b=>!b.lane).slice(0,150);
@@ -1370,6 +1374,7 @@ document.addEventListener("click", e=>{
   if(d.qr && d.id){ if(d.qr==="skip"){ S.rateSkip.push(d.id); save(); renderRate(); } else { setEntry(d.id, {st:"read", r:+d.qr}); } return; }
   if(d.grid!==undefined){ UI.grid = d.grid==="1"; saveUI(); if(current==="mybooks") renderMyBooks(); if(current==="browse") renderBrowseResults(); return; }
   if(d.act==="sugyes" && d.c){ const tid = S.suggest[d.c]; if(tid){ mergeInto(d.c, tid); save(); changed(); toast("Matched."); } return; }
+  if(d.act==="usegra"){ let n=0; Object.values(S.shelf).forEach(e=>{ if(e.st==="read" && !e.fin && e.gra){ e.fin = e.gra; n++; } }); save(); changed(); toast(`Added ${n} finish dates.`); return; }
   if(d.act==="sugno" && d.c){ delete S.suggest[d.c]; save(); renderCleanup(); return; }
   if(d.year){ YEAR = +d.year; renderYear(); return; }
   if(d.mbtab){ MB.tab=d.mbtab; MB.onlySparse=false; renderMyBooks(); return; }
@@ -1454,7 +1459,7 @@ document.addEventListener("change", async e=>{
   if(t.dataset.grfile && t.files[0]){
     const msgs = $$("[data-grmsg]"); msgs.forEach(m=>m.textContent="Reading the file…");
     try{ const res = importGoodreads(await t.files[0].text());
-      const txt = !res ? "That file doesn't look like a Goodreads export. It needs Title, Author, My Rating and Exclusive Shelf columns." : `Imported ${res.n} books: ${res.matched} matched the catalog and ${res.added} ${res.added===1?"was":"were"} added from Goodreads. ${res.added?"Add quick details to the ones you've read, or look up their genres from Profile.":""}${res.suggested?` ${res.suggested} look like catalog books under a slightly different title: check them on the Clean up page (More → Clean up my data).`:""}`;
+      const txt = !res ? "That file doesn't look like a Goodreads export. It needs Title, Author, My Rating and Exclusive Shelf columns." : `Imported ${res.n} books: ${res.matched} matched the catalog and ${res.added} ${res.added===1?"was":"were"} added from Goodreads.${res.kept?` ${res.kept} ${res.kept===1?"was":"were"} already on your shelf: only blank details were filled in, nothing you'd set was changed.`:""} ${res.added?"Add quick details to the ones you've read, or look up their genres from Profile.":""}${res.suggested?` ${res.suggested} look like catalog books under a slightly different title: check them on the Clean up page (More → Clean up my data).`:""}`;
       GRMSG = txt; $$("[data-grmsg]").forEach(m=>m.textContent=txt); if(current==="onboard") renderOnboard();
     }catch(err){ $$("[data-grmsg]").forEach(m=>m.textContent="Couldn't read that file. Export it again from Goodreads and retry."); }
     return;

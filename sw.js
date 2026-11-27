@@ -1,5 +1,5 @@
 // Bookshelf offline cache. Bump VERSION whenever the site files change.
-const VERSION = "bookshelf-2026-11-27a";
+const VERSION = "bookshelf-2026-11-27b";
 const FILES = ["./", "index.html", "app.js", "model.js", "catalog.js", "catalog-new.js", "catalog-tags.js", "editor.html", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
