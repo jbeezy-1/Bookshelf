@@ -23,8 +23,14 @@
   --body:"Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme:light;
 }
+/* Dark theme: follows the device unless the reader picked Light or Dark in Profile. */
+:root[data-theme="dark"]{
+    --paper:#131816; --card:#1A201D; --panel:#202824; --ink:#E5EAE3; --muted:#9BA59D; --rule:#2F3833;
+    --accent:#8FC6B0; --accent-ink:#0F1513; --gold:#E0B055; --track:#28312C; --warn:#E39A66;
+    --r5:#BDF0D9; --r4:#78BCA1; --r3:#4F8572; --r2:#34574C; color-scheme:dark;
+}
 @media (prefers-color-scheme: dark){
-  :root{
+  :root:not([data-theme="light"]){
     --paper:#131816; --card:#1A201D; --panel:#202824; --ink:#E5EAE3; --muted:#9BA59D; --rule:#2F3833;
     --accent:#8FC6B0; --accent-ink:#0F1513; --gold:#E0B055; --track:#28312C; --warn:#E39A66;
     --r5:#BDF0D9; --r4:#78BCA1; --r3:#4F8572; --r2:#34574C; color-scheme:dark;
@@ -84,7 +90,8 @@ section[data-view]{display:grid;gap:1.6rem}
 .spine{min-width:0;border-radius:2px 2px 0 0;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;border:0;padding:0}
 .spine span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:.64rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:92%}
 .r5{background:var(--r5);color:var(--paper)} .r4{background:var(--r4);color:var(--paper)} .r3{background:var(--r3);color:var(--ink)}
-@media (prefers-color-scheme: dark){.r3,.r2{color:#E5EAE3}.r5,.r4{color:#0F1513}} .r2{background:var(--r2);color:var(--ink)} .r0{background:var(--panel);color:var(--ink);box-shadow:inset 0 0 0 1px var(--muted)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) :is(.r3,.r2){color:#E5EAE3}:root:not([data-theme="light"]) :is(.r5,.r4){color:#0F1513}}
+:root[data-theme="dark"] :is(.r3,.r2){color:#E5EAE3} :root[data-theme="dark"] :is(.r5,.r4){color:#0F1513} .r2{background:var(--r2);color:var(--ink)} .r0{background:var(--panel);color:var(--ink);box-shadow:inset 0 0 0 1px var(--muted)}
 .legend{display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.82rem;color:var(--muted)}
 .legend i{display:inline-block;width:.75rem;height:.75rem;border-radius:2px;margin-right:.35rem;vertical-align:-1px}
 
@@ -115,6 +122,43 @@ section[data-view]{display:grid;gap:1.6rem}
 .cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:var(--panel)}
 .cover.big{width:4.2rem;height:6.2rem}
 .cover.big .ct{font-size:2.2rem}
+.strip{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(7.6rem,8.4rem);gap:.9rem;overflow-x:auto;padding-bottom:.6rem;scroll-snap-type:x proximity}
+.tile{display:grid;gap:.2rem;text-align:left;background:none;border:0;padding:0;cursor:pointer;color:var(--ink);scroll-snap-align:start;align-content:start}
+.tile .tcv{width:100%;height:auto;aspect-ratio:2/3;border-radius:3px}
+.tile .tcv .ct{font-size:2.4rem}
+.tile .tt{font-family:var(--display);font-size:.95rem;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:.3rem}
+.tile .ta{font-size:.78rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .tf{font-size:.75rem;font-weight:700;color:var(--accent)}
+.tile:hover .tt{text-decoration:underline}
+.track-row .ctrl:has(.stars){grid-column:1/-1}
+.stars{display:flex;align-items:center;gap:.1rem;flex-wrap:wrap}
+.star{background:none;border:0;padding:0 .08rem;font-size:1.75rem;line-height:1;cursor:pointer;color:var(--track)}
+.star.full{color:var(--gold)}
+.star.half{background:linear-gradient(90deg,var(--gold) 50%,var(--track) 50%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.star:hover{transform:scale(1.12)}
+.sval{margin-left:.5rem;font-weight:600;font-size:.9rem;color:var(--muted)}
+.sclear{margin-left:.4rem;padding:.2rem .5rem;font-size:.8rem}
+.grid-covers{display:grid;grid-template-columns:repeat(auto-fill,minmax(7.2rem,1fr));gap:1.1rem .9rem}
+.bookhead{display:grid;grid-template-columns:auto 1fr;gap:1.4rem;align-items:start}
+.cover.xl{width:10rem;height:15rem;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.cover.xl .ct{font-size:4.5rem}
+@media (max-width:560px){.bookhead{grid-template-columns:1fr}.cover.xl{width:8rem;height:12rem}}
+.tagbtn{border:0;cursor:pointer;font:inherit;font-size:.78rem}
+.tagbtn:hover{outline:1px solid var(--ink)}
+.serlist{display:flex;flex-wrap:wrap;gap:.4rem}
+.serit{border:1px solid var(--rule);background:var(--card);border-radius:6px;padding:.35rem .6rem;cursor:pointer;text-align:left;color:var(--ink);font-size:.88rem}
+.serit.read{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.serit.read .muted{color:var(--accent-ink);opacity:.8}
+.serit.reading{border-color:var(--gold);border-width:2px}
+.serit.want{border-style:dashed;border-color:var(--accent)}
+.heat{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;grid-auto-columns:11px;gap:3px;overflow-x:auto;padding-bottom:4px}
+.heat i{border-radius:2px;background:var(--track)}
+.heat i.h1{background:var(--r2)} .heat i.h2{background:var(--r3)} .heat i.h3{background:var(--r4)} .heat i.h4{background:var(--r5)}
+:root:not([data-theme="dark"]) .heat i.h1{background:#C3D6CE} 
+.crow{display:grid;grid-template-columns:auto 1fr auto;gap:.8rem;align-items:center;padding:.55rem 0;border-top:1px solid var(--rule)}
+.crow .cover{width:2.2rem;height:3.3rem}.crow .cover .ct{font-size:1.1rem}
+.crow .cc{display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width:600px){.crow{grid-template-columns:auto 1fr}.crow .cc{grid-column:1/-1;justify-content:flex-start}}
 .pill.sparse{background:transparent;border:1px dashed var(--muted);color:var(--muted)}
 
 .controls{display:grid;gap:.9rem}
@@ -201,6 +245,33 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 .steps{display:flex;gap:.35rem}
 .steps i{flex:1;height:4px;border-radius:2px;background:var(--track)}
 .steps i.on{background:var(--accent)}
+.searchbtn{flex:none;display:inline-flex;align-items:center;gap:.45rem;border:1px solid var(--rule);background:var(--card);color:var(--muted);border-radius:999px;padding:.4rem .8rem;cursor:pointer;font-weight:600;font-size:.9rem}
+.searchbtn kbd{font:inherit;font-size:.75rem;border:1px solid var(--rule);border-radius:4px;padding:0 .35rem}
+.searchbtn:hover{color:var(--ink);border-color:var(--ink)}
+.bottomnav{position:fixed;left:0;right:0;bottom:0;z-index:15;display:none;background:var(--paper);border-top:1px solid var(--rule);padding:4px 4px calc(4px + env(safe-area-inset-bottom,0px))}
+.bottomnav a,.bottomnav button{flex:1;display:grid;justify-items:center;gap:2px;padding:6px 0 4px;font-size:.7rem;font-weight:600;color:var(--muted);text-decoration:none;background:none;border:0;cursor:pointer;font-family:var(--body)}
+.bottomnav svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
+.bottomnav [aria-current="page"]{color:var(--accent)}
+.bottomnav [aria-current="page"] svg{stroke-width:2.4}
+@media (max-width:700px){
+  .bottomnav:not([hidden]){display:flex}
+  .top .tabs{display:none}
+  .top .wrap{justify-content:space-between}
+  .brand{display:inline!important}
+  .searchbtn{padding:.45rem}
+  .searchbtn .long{display:none}
+  main{padding-bottom:calc(5.5rem + env(safe-area-inset-bottom,0px))}
+  .toast{bottom:calc(76px + env(safe-area-inset-bottom,0px))}
+}
+.sres{display:grid;gap:.2rem}
+.sres h3{font-size:.75rem;font-family:var(--body);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:.8rem}
+.sres button{display:flex;gap:.7rem;align-items:center;text-align:left;background:none;border:0;border-radius:6px;padding:.4rem;cursor:pointer;color:var(--ink);width:100%}
+.sres button:hover,.sres button.sel{background:var(--panel)}
+.sres .cover{width:2rem;height:3rem}
+.sres .cover .ct{font-size:1rem}
+.menu{display:grid;gap:.2rem}
+.menu a,.menu button{display:flex;justify-content:space-between;align-items:center;padding:.75rem .6rem;border-radius:6px;text-decoration:none;color:var(--ink);font-weight:600;background:none;border:0;cursor:pointer;font-size:1rem;width:100%;text-align:left}
+.menu a:hover,.menu button:hover{background:var(--panel)}
 .toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:.55rem .9rem;border-radius:6px;font-size:.9rem;z-index:40;max-width:calc(100% - 32px)}
 
 /* Wrapped */
@@ -273,6 +344,7 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
       <a href="#taste" data-tab="taste">My taste</a>
       <a href="#profile" data-tab="profile">Profile</a>
     </nav>
+    <button class="searchbtn" data-act="search" aria-label="Search (press /)"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="long">Search books</span><kbd class="long">/</kbd></button>
     <button class="btn addbtn" data-act="addbook"><span class="long">Add a book</span><span class="short" aria-hidden="true">+ Add</span></button>
   </div>
 </header>
@@ -286,9 +358,20 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
   <section data-view="profile" id="v-profile" hidden></section>
   <section data-view="year" id="v-year" hidden></section>
   <section data-view="rate" id="v-rate" hidden></section>
+  <section data-view="series" id="v-series" hidden></section>
+  <section data-view="cleanup" id="v-cleanup" hidden></section>
+  <section data-view="book" id="v-book" hidden></section>
   <section data-view="friend" id="v-friend" hidden></section>
   <section data-view="incoming" id="v-incoming" hidden></section>
 </main>
+<nav class="bottomnav" id="bottomnav" aria-label="Main" hidden>
+  <a href="#home" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/></svg>Home</a>
+  <a href="#discover" data-tab="discover"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg>Discover</a>
+  <a href="#browse" data-tab="browse"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h4v15H4zM10 5h4v15h-4zM16 6l3.5-1 3 14-3.5 1z"/></svg>Browse</a>
+  <a href="#mybooks" data-tab="mybooks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>My books</a>
+  <button data-act="more" data-tab="more"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
+</nav>
+<div class="sheet" id="search" hidden role="dialog" aria-modal="true" aria-label="Search"><div class="inner" id="search-inner"></div></div>
 <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="Add a book"><div class="inner" id="sheet-inner"></div></div>
 <div class="wrapped" id="wrapped" hidden role="dialog" aria-modal="true" aria-label="Your year in books"></div>
 <div class="tip" id="tip" hidden></div>

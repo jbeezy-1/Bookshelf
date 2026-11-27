@@ -12,12 +12,13 @@ const TAGS = {
   family:"Family saga", books:"Love of books", truestory:"True story", western:"Western",
   globe:"Globe-trotting", funny:"Funny", emotional:"Emotional punch", dark:"Dark",
   epic:"Epic scope", sports:"Sports", crime:"Crime world", ideas:"Big ideas",
-  gothic:"Gothic atmosphere", space:"Space", nature:"Nature and wilderness", politics:"Politics and power"
+  gothic:"Gothic atmosphere", space:"Space", nature:"Nature and wilderness", politics:"Politics and power",
+  romance:"Love story"
 };
-const LANES = ["Thriller","Mystery","Sci-fi","Fantasy","Literary","Historical","Horror","Nonfiction"];
+const LANES = ["Thriller","Mystery","Sci-fi","Fantasy","Literary","Historical","Horror","Romance","Young adult","Nonfiction"];
 const ERAS = {B:"Before 1900", E:"1900–1945", M:"1945–1999", N:"2000–today", F:"Future", I:"Invented world"};
 const POVS = {f:"First person", t:"Third person", o:"Multiple or unusual voices", m:"Memoir", r:"Reported nonfiction"};
-const HOOK_CHOICES = ["narrator","catmouse","twists","underdog","worldbuild","epic","emotional","funny","ideas","mystery","war","survival","science","dark","truestory","heist","time","coming"];
+const HOOK_CHOICES = ["narrator","catmouse","twists","underdog","worldbuild","epic","emotional","funny","ideas","mystery","war","survival","science","dark","truestory","heist","time","coming","romance","sports"];
 
 const LEN_BUCKETS = [["Under 300",0,300],["300–399",300,400],["400–499",400,500],["500–699",500,700],["700+",700,1e9]];
 const lenIdx = p => p ? LEN_BUCKETS.findIndex(([,lo,hi])=>p>=lo&&p<hi) : -1;
@@ -43,6 +44,8 @@ const MODEL = {
   authorMin: 2, authorPull: 0.4, authorCap: 0.3,
   // Award winners get a small lift, larger while you've rated only a few books.
   acclaim: {base:0.03, early:0.1},
+  // Books on your want-to-read list hint at what interests you: books like them get a nudge.
+  wantLift: 0.3, wantWeight: 0.15,
   active: null  // per-reader weights from tuneWeights(), when they beat the defaults
 };
 
@@ -88,10 +91,14 @@ function fitFor(c, rated, TP, prefs, neg=[]){
   const mean = TP.mean;
   const sims = rated.map(r=>({r, score:similarity(c,r)})).sort((x,y)=>y.score-x.score);
   let num=0, den=0;
-  sims.forEach(s=>{ const w = Math.pow(s.score, MODEL.neighborPower) * (prefs.favorites.includes(s.r.id) ? MODEL.favoriteWeight : 1); num += w*(s.r.r-mean); den += w; });
-  // Dialogue level is left out here on purpose: stopping one talky book shouldn't count against every talky book.
-  const negSims = neg.map(n=>({r:n, score:similarity(c,n,"talk")})).sort((x,y)=>y.score-x.score);
+  // Recent ratings count more than old ones (rw, set by the app), since taste drifts.
+  sims.forEach(s=>{ const w = Math.pow(s.score, MODEL.neighborPower) * (prefs.favorites.includes(s.r.id) ? MODEL.favoriteWeight : 1) * (s.r.rw||1); num += w*(s.r.r-mean); den += w; });
+  // Soft examples: books you didn't finish or passed on (less like this) and your want-to-read list (a little more like this).
+  // Dialogue level is left out for the "less like this" ones: stopping one talky book shouldn't count against every talky book.
+  const soft = neg.filter(n=>n.id!==c.id);
+  const negSims = soft.filter(n=>n.st!=="want").map(n=>({r:n, score:similarity(c,n,"talk")})).sort((x,y)=>y.score-x.score);
   negSims.forEach(s=>{ const w = Math.pow(s.score, MODEL.neighborPower) * s.r.w; num += w*(Math.min(s.r.r, mean)-mean); den += w; });
+  soft.filter(n=>n.st==="want").forEach(n=>{ const w = Math.pow(similarity(c,n), MODEL.neighborPower) * MODEL.wantWeight; num += w*MODEL.wantLift; den += w; });
   const knn = num/(den+MODEL.shrink);
   const known = c.tags.filter(t=>TP.aff[t]);
   const tagDev = known.length ? known.reduce((a,t)=>a+TP.aff[t].dev,0)/known.length : 0;
@@ -123,7 +130,10 @@ function fitFor(c, rated, TP, prefs, neg=[]){
   const fit = fitFromStars(score);
   const strong = known.filter(t=>TP.aff[t].n>=2 && TP.aff[t].avg>=Math.max(4.3, (TP.raw||4)+0.2)).sort((a,b)=>TP.aff[b].avg-TP.aff[a].avg);
   const warn = negSims.find(s=>s.score>0.55) || null;
-  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3), warn, author, acclaim};
+  // How much to trust the number: lots of close matches among your ratings, or a best guess?
+  const close = sims.filter(s=>s.score>0.45).length, top = sims[0] ? sims[0].score : 0;
+  const conf = rated.length<5 ? "low" : (close>=3 && top>0.5) ? "high" : top>=0.35 ? "medium" : "low";
+  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3), warn, author, acclaim, conf};
 }
 
 // Per-reader weights: try scaling each detail up or down and keep what predicts this reader's own
@@ -166,6 +176,8 @@ function detailsFromSubjects(subjects){
   if(has("science fiction")) lane = "Sci-fi";
   else if(has("fantasy","magic","wizards","dragons")) lane = "Fantasy";
   else if(has("horror","ghost stories","supernatural")) lane = "Horror";
+  else if(has("young adult fiction","juvenile fiction","teen fiction")) lane = "Young adult";
+  else if(has("love stories","romance","romantic")) lane = "Romance";
   else if(has("detective and mystery","mystery","whodunit","private investigators")) lane = "Mystery";
   else if(has("thriller","suspense","spy stories","espionage")) lane = "Thriller";
   else if(has("historical fiction")) lane = "Historical";
@@ -175,7 +187,7 @@ function detailsFromSubjects(subjects){
     ["crime","murder","crime","criminals","gangsters","mafia"],["space","space","interplanetary","astronaut"],["worldbuild","imaginary places","magic"],["funny","humor","humorous","comic"],
     ["coming","coming of age","bildungsroman","teenagers"],["family","family"],["survival","survival"],["revenge","revenge"],["heist","robbery","thieves","heist"],["conspiracy","conspiracies"],
     ["truestory","biography","autobiography","memoir","true crime"],["western","western stories","cowboys","frontier"],["gothic","ghost","haunted","gothic"],["sports","baseball","football","basketball","sports","hockey","golf"],
-    ["politics","politics","political"],["nature","nature","wilderness","animals"],["ideas","philosophy","artificial intelligence"],["science","science","scientists"],["dark","psychological"],["emotional","grief","loss"]];
+    ["politics","politics","political"],["nature","nature","wilderness","animals"],["ideas","philosophy","artificial intelligence"],["science","science","scientists"],["dark","psychological"],["emotional","grief","loss"],["romance","love stories","romance","romantic"]];
   const tags = []; map.forEach(([tag,...words])=>{ if(words.some(w=>s.includes(w)) && !tags.includes(tag)) tags.push(tag); });
   return {lane, tags: tags.slice(0,6)};
 }

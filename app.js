@@ -12,7 +12,7 @@ const TALK = ["","Light","Moderate","Heavy"], PACE = ["","Slow burn","Steady","F
 const today = () => new Date().toISOString().slice(0,10);
 const dateTxt = d => d ? new Date(d+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "";
 const meter = v => `<span class="meter" aria-hidden="true">${[1,2,3].map(i=>`<i class="${i<=v?"on":""}"></i>`).join("")}</span>`;
-const LENF = {any:["Any length",0,1e9], short:["Under 350",0,350], medium:["350–499",350,500], long:["500–699",500,700], epic:["700+",700,1e9], "long+":["500+",500,1e9]};
+const LENF = {any:["Any length",0,1e9], flight:["Under 300",0,300], short:["Under 350",0,350], medium:["350–499",350,500], long:["500–699",500,700], epic:["700+",700,1e9], "long+":["500+",500,1e9]};
 const inLen = (p, k) => { const r = LENF[k]||LENF.any; return !p ? k==="any" : (p>=r[1] && p<r[2]); };
 const normT = t => String(t||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\(.*?\)/g,"").split(":")[0].replace(/^(the|a|an)\s+/,"").replace(/[^a-z0-9]+/g,"");
 const lastName = a => String(a||"").split(/,| & | and /)[0].trim().split(/\s+/).pop().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z]/g,"");
@@ -26,7 +26,7 @@ const CATIDX = {}; CAT.forEach(b=>{ CATIDX[normT(b.t)+"|"+lastName(b.a)] = b; (C
 
 /* ---------- reader state (this browser only) ---------- */
 const KEY = "bookshelf-v1";
-const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}, tuned:null, rateSkip:[]});
+const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}, tuned:null, rateSkip:[], log:{}, suggest:{}});
 const STATUSES = ["read","reading","want","passed","dnf"];
 const FORMATS = {print:"Print", ebook:"Ebook", audio:"Audiobook"};
 let S = (()=>{ try{ const s = JSON.parse(localStorage.getItem(KEY)); if(s && s.v===1) return Object.assign(blank(), s); }catch(e){} return blank(); })();
@@ -48,6 +48,8 @@ function cleanEntry(e){
   ["start","fin","stop"].forEach(k=>{ const d=isDate(e[k]); if(d) out[k]=d; });
   if(e.note) out.note = str(e.note, 4000);
   if(FORMATS[e.fmt]) out.fmt = e.fmt;
+  const pg = numIn(e.page,0,20000); if(pg!==null) out.page = Math.round(pg);
+  const rc = numIn(e.reads,1,99); if(rc) out.reads = Math.round(rc);
   return out.st ? out : null;
 }
 function cleanState(j){
@@ -55,7 +57,7 @@ function cleanState(j){
   const s = blank(), P = j.profile||{};
   s.profile = {name:str(P.name,60), lanes:(Array.isArray(P.lanes)?P.lanes:[]).filter(l=>LANES.includes(l)), hooks:(Array.isArray(P.hooks)?P.hooks:[]).filter(h=>TAGS[h]).slice(0,4),
     favorites:(Array.isArray(P.favorites)?P.favorites:[]).map(String).slice(0,50), length:["short","medium","long"].includes(P.length)?P.length:null,
-    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today(), goals:{}, covers:P.covers==="off"?"off":"on"};
+    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today(), goals:{}, covers:P.covers==="off"?"off":"on", theme:["light","dark"].includes(P.theme)?P.theme:"auto"};
   for(const [y,n] of Object.entries(P.goals||{})){ const g = numIn(n,1,500); if(/^\d{4}$/.test(y) && g) s.profile.goals[y] = Math.round(g); }
   for(const [k,v] of Object.entries(j.hints||{})){ if(/^[a-z0-9]{1,20}$/.test(k) && isDate(v)) s.hints[k] = v; }
   for(const [id,b] of Object.entries(j.custom||{})) if(b && typeof b==="object" && /^(gr|ol)-[a-z0-9-]+$/.test(id)) s.custom[id] = cleanBook(b, id);
@@ -63,12 +65,17 @@ function cleanState(j){
   s.next = typeof j.next==="string" && s.shelf[j.next] ? j.next : null;
   if(j.tuned && typeof j.tuned==="object"){ const w = j.tuned.weights; const ok = w && typeof w==="object" && Object.keys(MODEL.weights).every(k=>numIn(w[k],0,50)!==null);
     s.tuned = {n:numIn(j.tuned.n,0,1e5)||0, at:isDate(j.tuned.at)||today(), before:numIn(j.tuned.before,0,5)||0, after:numIn(j.tuned.after,0,5)||0, weights: ok ? Object.fromEntries(Object.keys(MODEL.weights).map(k=>[k,+w[k]])) : null}; }
+  for(const [d,n] of Object.entries(j.log||{}).slice(-1500)){ const v = numIn(n,0,5000); if(isDate(d) && v) s.log[d] = Math.round(v); }
+  for(const [cid,tid] of Object.entries(j.suggest||{})){ if(s.custom[cid] && CATMAP[tid]) s.suggest[cid] = tid; }
   s.lastBackup = isDate(j.lastBackup);
   s.rateSkip = (Array.isArray(j.rateSkip)?j.rateSkip:[]).filter(id=>CATMAP[id]).slice(0,500);
   for(const [k,f] of Object.entries(j.friends||{})) if(f && typeof f.code==="string" && f.code.length<200000) s.friends[str(k,80)] = {name:str(f.name,60), at:isDate(f.at)||today(), code:f.code};
   return s;
 }
 let storageOK = true;
+function applyTheme(){ const t = S.profile.theme; if(t==="light"||t==="dark") document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  const m = document.querySelector('meta[name="theme-color"]'); if(m){ const dark = t==="dark" || (t!=="light" && matchMedia("(prefers-color-scheme: dark)").matches); m.content = dark ? "#131816" : "#244A3F"; } }
+applyTheme();
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); storageOK = true; }catch(e){ storageOK = false; toast("Couldn't save in this browser. Download a backup from Profile so you don't lose changes."); } }
 const book = id => CATMAP[id] || S.custom[id];
 const entry = id => S.shelf[id];
@@ -85,10 +92,12 @@ function setEntry(id, patch){
 let RATED = [], TP = null, FIT = {}, PREFS = null, NEG = [];
 function readBooks(){ return Object.entries(S.shelf).filter(([,e])=>e.st==="read").map(([id,e])=>({...book(id), ...e, id})).filter(b=>b.t); }
 function recompute(){
-  RATED = readBooks().filter(b=>b.r>0);
+  // Recency weight: a rating from 4+ years ago counts about half as much as one from this year.
+  const nowY = Date.now()/31557600000;
+  RATED = readBooks().filter(b=>b.r>0).map(b=>{ const d = b.fin||b.at; const age = d ? Math.max(0, nowY - new Date(d+"T12:00:00").getTime()/31557600000) : 2; return {...b, rw: Math.max(0.4, Math.pow(0.5, age/4))}; });
   TP = tasteProfile(RATED);
   PREFS = {lanes:S.profile.lanes||[], hooks:S.profile.hooks||[], favorites:S.profile.favorites||[], length:S.profile.length, series:S.profile.series};
-  NEG = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf"||e.st==="passed").map(([id,e])=>{ const b = book(id); return b && {...b, id, st:e.st, r:e.st==="dnf"&&e.dr ? e.dr : MODEL.negRating[e.st], w:MODEL.negWeight[e.st]}; }).filter(Boolean);
+  NEG = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf"||e.st==="passed"||e.st==="want").map(([id,e])=>{ const b = book(id); return b && (e.st==="want" ? {...b, id, st:"want"} : {...b, id, st:e.st, r:e.st==="dnf"&&e.dr ? e.dr : MODEL.negRating[e.st], w:MODEL.negWeight[e.st]}); }).filter(Boolean);
   FIT = {}; SN = null;
   MODEL.active = S.tuned && S.tuned.weights ? S.tuned.weights : null;
   scheduleTuning();
@@ -115,6 +124,7 @@ function pagesPerDay(){
   return {ppd:Math.max(5, Math.round(p/d)), basis:`your pace across ${spans.length} dated book${spans.length>1?"s":""}`};
 }
 const daysFor = p => p ? Math.max(1, Math.round(p/pagesPerDay().ppd)) : null;
+const dd = n => `${n} day${n===1?"":"s"}`;
 
 /* ---------- series ---------- */
 // Catalog series look like "Slough House #3, ongoing" or "Karla Trilogy #1 of 3".
@@ -138,17 +148,40 @@ function seriesNext(){
   return SN = out;
 }
 const nextInSeriesFor = id => seriesNext().find(x=>x.b.id===id);
+// A later book in a series you haven't started shouldn't be recommended ahead of book 1.
+function seriesBlocked(b){
+  const p = parseSeries(b.series); if(!p || p.k<=1 || /stands alone/.test(b.series||"")) return false;
+  const earlier = (SERIES[p.name]||[]).filter(x=>x.k<p.k);
+  return earlier.some(x=>!["read","reading","dnf","passed"].includes(status(x.b.id)));
+}
+// Keep lists varied: the first time an author or series shows up it stays in place; repeats move down the list.
+function diversify(items, get=x=>x){
+  const seenA = new Set(), seenS = new Set(), first = [], later = [];
+  items.forEach(it=>{ const b = get(it), sk = (parseSeries(b.series)||{}).name || null;
+    if(seenA.has(b.a) || (sk && seenS.has(sk))) later.push(it); else { first.push(it); seenA.add(b.a); if(sk) seenS.add(sk); } });
+  return first.concat(later);
+}
 const seriesNextAfter = id => { const p = parseSeries((CATMAP[id]||{}).series); return p ? seriesNext().find(x=>x.name===p.name) : null; };
 const hrs = p => p*1.5/60;
 const isSparse = b => !b.cat && (!b.lane || !b.pace || !b.talk || !b.pov || b.tags.length<2);
 function candidates(){ return CAT.filter(b=>{ const s = status(b.id); return !s || s==="want"; }).concat(Object.values(S.custom).filter(b=>status(b.id)==="want")); }
 function upNext(){
   if(S.next && status(S.next)==="want") return {b:book(S.next), auto:false};
-  const pool = candidates().filter(b=>!PREFS.lanes.length || PREFS.lanes.includes(b.lane));
+  const pool = candidates().filter(b=>(!PREFS.lanes.length || PREFS.lanes.includes(b.lane)) && (status(b.id)==="want" || !seriesBlocked(b)));
   const want = pool.filter(b=>status(b.id)==="want").sort((a,c)=>fit(c.id).score-fit(a.id).score);
   if(want.length) return {b:want[0], auto:true, fromList:true};
   pool.sort((a,c)=>fit(c.id).score-fit(a.id).score);
   return pool[0] ? {b:pool[0], auto:true} : null;
+}
+
+/* ---------- reading log: pages per day, for progress and the calendar ---------- */
+function logPages(n, day=today()){ if(!(n>0)) return; S.log[day] = Math.min(5000, (S.log[day]||0) + Math.round(n)); }
+function setPage(id, page){
+  const b = book(id), e = S.shelf[id]||{}; if(!b || !b.p) return;
+  page = Math.max(0, Math.min(b.p, Math.round(page)||0));
+  const prev = e.page ?? Math.round((e.pct||0)*b.p/100);
+  logPages(page - prev);
+  setEntry(id, {page, pct: Math.round(page/b.p*100)});
 }
 
 /* ---------- small UI helpers ---------- */
@@ -169,14 +202,15 @@ function whyLines(b){
   if(top && top.score>0.45 && top.r.r < (TP.raw||4)-0.4) out.push(`Heads up: it's closest to ${top.r.t}, which you rated ${starTxt(top.r.r)}.`);
   if(f.warn) out.push(`Heads up: it's a lot like ${f.warn.r.t}, which you ${f.warn.r.st==="dnf"?"didn't finish":"passed on"}. That lowers its score a little.`);
   if(f.offLane) out.push(`It's outside the genres you picked (${b.lane}).`);
-  if(b.p) out.push(`About ${daysFor(b.p)} days at ${pagesPerDay().basis} (${pagesPerDay().ppd} pages a day).`);
+  if(f.conf==="low" && RATED.length>=5) out.push("This one's a best guess: none of the books you've rated are very much like it.");
+  if(b.p) out.push(`About ${dd(daysFor(b.p))} at ${pagesPerDay().basis} (${pagesPerDay().ppd} pages a day).`);
   if(!RATED.length) out.unshift("Rate a few books you've read and these reasons get specific.");
   return out;
 }
 function statsGrid(b, e){
   const avgP = (()=>{ const r = readBooks().filter(x=>x.p); return r.length ? r.reduce((a,x)=>a+x.p,0)/r.length : null; })();
   const rows = [];
-  if(b.p) rows.push(["Pages", fmt(b.p)], ["Reading time", `~${fmt(hrs(b.p))} hrs · ~${daysFor(b.p)} days`]);
+  if(b.p) rows.push(["Pages", fmt(b.p)], ["Reading time", `~${fmt(hrs(b.p))} hrs · ~${dd(daysFor(b.p))}`]);
   if(b.p && avgP) rows.push(["Vs. your average", `${b.p-avgP>=0?"+":"−"}${fmt(Math.abs(b.p-avgP))} pages`]);
   if(b.y) rows.push(["First published", b.y<0?`${-b.y} BC`:b.y]);
   if(b.lane) rows.push(["Genre", b.sub ? `${b.lane} · ${b.sub}` : b.lane]);
@@ -192,7 +226,7 @@ function statsGrid(b, e){
   if(e && e.start) rows.push(["Started", dateTxt(e.start)]);
   if(e && e.st==="dnf"){ rows.push(["Stopped at", `${e.pct||0}%${b.p?` · about page ${fmt(b.p*(e.pct||0)/100)}`:""}`]); if(e.stop) rows.push(["Stopped", dateTxt(e.stop)]); if(e.dr) rows.push(["Rating so far", starTxt(e.dr)]); }
   if(e && e.fin && e.st==="read") rows.push(["Finished", dateTxt(e.fin)]);
-  if(e && e.st==="read" && e.start && e.fin){ const d=Math.max(1,Math.round((new Date(e.fin)-new Date(e.start))/864e5)); rows.push(["Took", `${d} days${b.p?` · ${Math.round(b.p/d)} pages a day`:""}`]); }
+  if(e && e.st==="read" && e.start && e.fin){ const d=Math.max(1,Math.round((new Date(e.fin)-new Date(e.start))/864e5)); rows.push(["Took", `${dd(d)}${b.p?` · ${Math.round(b.p/d)} pages a day`:""}`]); }
   return `<dl class="stats">${rows.map(([k,v,raw])=>`<div><dt>${k}</dt><dd>${raw?v:esc(v)}</dd></div>`).join("")}</dl>`;
 }
 const tagList = b => b.tags.length ? `<div>${b.tags.map(t=>TAGS[t]?`<span class="tag${PREFS.hooks.includes(t)?" hook":""}">${esc(TAGS[t])}</span>`:"").join("")}</div>` : "";
@@ -216,15 +250,18 @@ function scoreBadge(b){
   const f = fit(b.id);
   return `<span class="score fit" style="--v:${f.fit}" title="Fit score"><span><b>${f.fit}</b><small>fit</small></span></span>`;
 }
+// Tap a star for a whole rating; tap the same star again for a half (4 -> 3.5), and again to go back.
 function ratingSelect(id, r, attr="data-rate", label="Your rating"){
-  const opts = [["","Rate it"],...[5,4.5,4,3.5,3,2.5,2,1.5,1,0.5].map(v=>[v, `${v}★`])];
-  return `<label class="ctrl"><span class="lbl">${label}</span><select ${attr}="${id}">${opts.map(([v,l])=>`<option value="${v}"${String(r||"")===String(v)?" selected":""}>${l}</option>`).join("")}</select></label>`;
+  const kind = attr==="data-drate" ? "dr" : "r";
+  const stars = [1,2,3,4,5].map(i=>`<button type="button" class="star ${r>=i?"full":r>=i-0.5?"half":""}" data-star="${i}" data-sid="${esc(id)}" data-skind="${kind}" aria-label="${i} star${i>1?"s":""}">★</button>`).join("");
+  return `<div class="ctrl"><span class="lbl">${label}</span><div class="stars" role="group" aria-label="${label}">${stars}<span class="sval">${r?starTxt(r):"Tap to rate"}</span>${r?`<button type="button" class="btn quiet sclear" data-star="0" data-sid="${esc(id)}" data-skind="${kind}">Clear</button>`:""}</div></div>`;
 }
 function trackBox(b){
   const e = entry(b.id) || {}, s = e.st;
   const btn = (st,label) => `<button class="btn ghost" data-st="${st}" data-id="${b.id}" aria-pressed="${s===st}">${label}</button>`;
   let html = `<div class="actions">${btn("want","Want to read")}${btn("reading","Reading")}${btn("read","Read it")}${btn("dnf","Didn't finish")}${btn("passed","Not for me")}${s?`<button class="btn quiet" data-st="" data-id="${b.id}">Remove</button>`:""}</div>`;
   if(s==="want") html += `<div class="actions"><button class="btn ghost" data-act="next" data-id="${b.id}" aria-pressed="${S.next===b.id}">${S.next===b.id?"Up next ✓":"Make it up next"}</button></div>`;
+  if(s==="reading" && b.p) html += `<div class="track-row"><label class="ctrl"><span class="lbl">On page</span><input type="number" min="0" max="${b.p}" value="${e.page ?? Math.round((e.pct||0)*b.p/100)}" data-page="${b.id}" inputmode="numeric" aria-label="Page you're on"></label><div class="ctrl"><span class="lbl">Quick add</span><div class="actions">${[10,25,50].map(n=>`<button class="btn ghost" data-addp="${n}" data-id="${b.id}">+${n}</button>`).join("")}</div></div></div>`;
   if(s==="reading") html += `<div class="track-row"><label class="ctrl"><span class="lbl">Progress: <span id="pv-${b.id}">${e.pct||0}</span>%</span><input type="range" min="0" max="100" step="1" value="${e.pct||0}" data-pct="${b.id}" aria-label="Progress percent"></label><label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label></div>`;
   if(s==="dnf") html += `<div class="track-row"><label class="ctrl"><span class="lbl">Stopped at: <span id="pv-${b.id}">${e.pct||0}</span>%</span><input type="range" min="0" max="100" step="1" value="${e.pct||0}" data-pct="${b.id}" aria-label="Where you stopped, percent"></label>${ratingSelect(b.id, e.dr, "data-drate", "Rating so far (optional)")}<label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label><label class="ctrl"><span class="lbl">Stopped</span><input type="date" value="${e.stop||""}" data-date="stop" data-id="${b.id}"></label></div>
     <p class="muted small">Books you didn't finish stay off your recommendations and don't count toward your average or your taste charts. If you pick it back up, tap <b>Reading</b> and your place is kept.</p>`;
@@ -245,7 +282,7 @@ function quickDetails(b){
     <div class="ctrl"><span class="lbl">Themes (pick up to 5)</span><div class="chips">${Object.keys(TAGS).map(t=>`<button class="chip" data-qtag="${t}" data-id="${b.id}" aria-pressed="${b.tags.includes(t)}">${esc(TAGS[t])}</button>`).join("")}</div></div></div>`;
 }
 /* Covers: real ones from Open Library when this reader allows it, otherwise (and while loading) a generated title card. */
-const LANE_HUE = {Thriller:200, Mystery:265, "Sci-fi":185, Fantasy:290, Literary:30, Historical:40, Horror:355, Nonfiction:150};
+const LANE_HUE = {Thriller:200, Mystery:265, "Sci-fi":185, Fantasy:290, Literary:30, Historical:40, Horror:355, Romance:335, "Young adult":15, Nonfiction:150};
 const hashN = t => { let h=0; for(const c of String(t)) h = (h*31 + c.charCodeAt(0))|0; return Math.abs(h); };
 let COV = (()=>{ try{ return JSON.parse(localStorage.getItem("bookshelf-covers"))||{}; }catch(e){ return {}; } })();
 const coversOn = () => S.profile.covers!=="off";
@@ -278,7 +315,7 @@ let scanT; new MutationObserver(()=>{ clearTimeout(scanT); scanT = setTimeout(sc
 
 function bookCard(b, opt={}){
   const key = (opt.ctx||"x")+":"+b.id, s = status(b.id);
-  const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★`:"", opt.note?`<b>${esc(opt.note)}</b>`:""].filter(Boolean).join(" · ");
+  const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★${fit(b.id).conf==="low"?" (best guess)":""}`:"", opt.note?`<b>${esc(opt.note)}</b>`:""].filter(Boolean).join(" · ");
   let body = b.hook ? `<p>${esc(b.hook)}</p>` : `<p class="muted">From ${b.src==="goodreads"?"your Goodreads import":"Open Library"}. Not in the Bookshelf catalog yet.</p>`;
   body += trackBox(b);
   if(!s || s==="want" || s==="passed"){
@@ -287,6 +324,7 @@ function bookCard(b, opt={}){
     if(RATED.length) body += `<div class="near"><div class="eyebrow">Closest books you've read</div>${f.near.map(x=>`<div class="nearrow"><span>${esc(x.r.t)} <span class="muted">${starTxt(x.r.r)}</span></span><span class="bar"><i style="width:${Math.round(x.score*100)}%"></i></span><span class="muted small">${Math.round(x.score*100)}%</span></div>`).join("")}</div>`;
   }
   body += quickDetails(b) + statsGrid(b, entry(b.id)) + tagList(b);
+  body += `<div class="actions"><a class="btn ghost" href="#book=${encodeURIComponent(b.id)}">Full page</a></div>`;
   if(s==="read"){ const sn = seriesNextAfter(b.id); body += `<div class="actions"><button class="btn ghost" data-act="like" data-id="${b.id}">Find books like this</button>${sn?`<button class="btn ghost" data-act="open" data-id="${sn.b.id}">Next in series: ${esc(sn.b.t)}</button>`:""}</div>`; }
   return `<li><details class="bk" data-key="${key}"${OPEN.has(key)?" open":""}><summary>${opt.badge || scoreBadge(b)}${coverEl(b)}<span style="min-width:0">${opt.rank?`<span class="rank">#${opt.rank} </span>`:""}<span class="bt">${esc(b.t)}</span><div class="bm">${meta}</div></span><span class="side">${pills(b)}<span class="chev" aria-hidden="true">›</span></span></summary><div class="body">${body}</div></details></li>`;
 }
@@ -351,7 +389,7 @@ function searchCatalog(q, limit=12){
       if(t.startsWith(n)) s+=5; else if(t.includes(n)) s+=3;
       if(a.includes(n)) s+=3;
       if(words.every(w=>t.includes(w)||a.includes(w))) s+=2;
-      return {b,s}; }).filter(x=>x.s>0).sort((x,y)=>y.s-x.s||x.b.t.localeCompare(y.b.t)).slice(0,limit).map(x=>x.b);
+      return {b,s}; }).filter(x=>x.s>0).sort((x,y)=>y.s-x.s || (x.b.a===y.b.a ? ((parseSeries(x.b.series)||{}).k||99)-((parseSeries(y.b.series)||{}).k||99) || (x.b.y||0)-(y.b.y||0) : 0) || x.b.t.localeCompare(y.b.t)).slice(0,limit).map(x=>x.b);
 }
 function renderObResults(){
   const el = $("#ob-results"); if(!el) return;
@@ -367,7 +405,8 @@ function renderHome(){
   const reading = Object.entries(S.shelf).filter(([,e])=>e.st==="reading").map(([id])=>book(id)).filter(Boolean);
   const want = Object.entries(S.shelf).filter(([,e])=>e.st==="want").length;
   const nx = upNext();
-  const top = candidates().filter(b=>status(b.id)!=="want" && (!PREFS.lanes.length||PREFS.lanes.includes(b.lane))).sort((a,c)=>fit(c.id).score-fit(a.id).score).slice(0,5);
+  const top = diversify(candidates().filter(b=>status(b.id)!=="want" && !seriesBlocked(b) && (!PREFS.lanes.length||PREFS.lanes.includes(b.lane))).sort((a,c)=>fit(c.id).score-fit(a.id).score).slice(0,60)).slice(0,5);
+  const rows = becauseRows(new Set(top.map(b=>b.id)));
   const sparse = Object.values(S.custom).filter(b=>status(b.id)==="read" && isSparse(b)).length;
   const shelf = [...read].sort((a,b)=>(b.r||0)-(a.r||0) || (b.p||0)-(a.p||0)).slice(0,40);
   const series = seriesNext().sort((a,c)=>(status(c.b.id)==="want")-(status(a.b.id)==="want") || (c.avg||0)-(a.avg||0) || fit(c.b.id).score-fit(a.b.id).score).slice(0,4);
@@ -376,7 +415,7 @@ function renderHome(){
     <h1>${read.length ? `${fmt(pages)} pages. ${read.length} book${read.length===1?"":"s"}.` : "Let's find your next book."}</h1></div>
   ${!storageOK?`<p class="notice">This browser isn't letting Bookshelf save. Download a backup from Profile before closing the page.</p>`:""}
   ${safetyNotices()}
-  ${sparse?`<p class="notice">${sparse} book${sparse>1?"s you've read need":" you've read needs"} quick details to count fully. <a href="#mybooks" data-act="showsparse">Fill them in</a></p>`:""}
+  ${(()=>{ const I = cleanupIssues(), n = I.sugg.length + I.nodate.length + I.norate.length + I.sparse.length; return n>=3 && !hintOff("cleanup") ? `<p class="notice">${n} small things on your shelf could use a look (missing dates, ratings or details). <a href="#cleanup">Clean up</a> · <a href="#home" data-act="hint" data-k="cleanup">Later</a></p>` : ""; })()}
   <div class="kpis">
     <div class="kpi"><b>${read.length}</b><span>books read</span></div>
     <div class="kpi"><b>${fmt(pages)}</b><span>pages read</span></div>
@@ -387,10 +426,10 @@ function renderHome(){
   </div>
   <div class="grid3">
     <div class="panel feature"><div class="eyebrow">Reading now</div>
-      ${reading.length?reading.map(b=>{ const e=entry(b.id); return `<div class="t">${esc(b.t)}</div><div class="muted small">${esc(b.a)}${b.p?` · ${fmt(Math.round(b.p*(e.pct||0)/100))} of ${fmt(b.p)} pages`:""}</div><div class="progress"><i style="width:${e.pct||0}%"></i></div><div class="actions"><button class="btn ghost" data-act="open" data-id="${b.id}">Update progress</button></div>`; }).join("<hr style='border:0;border-top:1px solid var(--rule);width:100%'>"):`<p class="muted small">Nothing yet. Open any book and tap <b>Reading</b>.</p>`}
+      ${reading.length?reading.map(b=>{ const e=entry(b.id); return `<div class="t">${esc(b.t)}</div><div class="muted small">${esc(b.a)}${b.p?` · ${fmt(Math.round(b.p*(e.pct||0)/100))} of ${fmt(b.p)} pages`:""}</div><div class="progress"><i style="width:${e.pct||0}%"></i></div><div class="actions">${b.p?[10,25,50].map(n=>`<button class="btn ghost" data-addp="${n}" data-id="${b.id}">+${n} pages</button>`).join(""):""}<button class="btn quiet" data-act="open" data-id="${b.id}">More</button></div>`; }).join("<hr style='border:0;border-top:1px solid var(--rule);width:100%'>"):`<p class="muted small">Nothing yet. Open any book and tap <b>Reading</b>.</p>`}
     </div>
     <div class="panel feature"><div class="eyebrow">${nx?(nx.auto?(nx.fromList?"Up next · best fit on your list":"Up next · top recommendation"):"Up next · your pick"):"Up next"}</div>
-      ${nx?`<div style="display:flex;gap:.8rem;align-items:flex-start">${coverEl(nx.b).replace('class="cover"','class="cover big"')}<div style="min-width:0"><div class="t">${esc(nx.b.t)}</div><div class="muted small">${esc(nx.b.a)}${nx.b.p?` · ${fmt(nx.b.p)} pages · ~${daysFor(nx.b.p)} days`:""}</div></div></div>
+      ${nx?`<div style="display:flex;gap:.8rem;align-items:flex-start">${coverEl(nx.b).replace('class="cover"','class="cover big"')}<div style="min-width:0"><div class="t">${esc(nx.b.t)}</div><div class="muted small">${esc(nx.b.a)}${nx.b.p?` · ${fmt(nx.b.p)} pages · ~${dd(daysFor(nx.b.p))}`:""}</div></div></div>
       <div class="progress" title="Fit ${fit(nx.b.id).fit}"><i style="width:${fit(nx.b.id).fit}%"></i></div>
       <div class="muted small">Fit ${fit(nx.b.id).fit}. ${esc(whyLines(nx.b)[0])}</div>
       <div class="actions"><button class="btn ghost" data-act="open" data-id="${nx.b.id}">See details</button></div>`:`<p class="muted small">Add some books to get a pick.</p>`}
@@ -404,6 +443,7 @@ function renderHome(){
   ${RATED.length<8?`<div class="panel resultbar"><span><b>Make your recommendations personal</b> <span class="muted small">Rate a few well-known books you've read. It takes about a minute.</span></span><a class="btn" href="#rate">Quick-rate books</a></div>`:""}
   ${(()=>{ const now=new Date(), wy = now.getMonth()>=10 ? now.getFullYear() : now.getMonth()===0 ? now.getFullYear()-1 : null; return wy && finishedIn(wy).length>=3 ? `<div class="panel resultbar wbanner"><span><b>Your ${wy} Wrapped is ready</b> <span class="small">Your year in books, story-style.</span></span><button class="btn big wplay" data-act="wplay" data-y="${wy}">▶ Play</button></div>` : ""; })()}
   ${goalPanel()}
+  ${rows.map(r=>`<div class="block"><h2>${esc(r.title)}</h2><div class="strip">${r.books.map(b=>tile(b)).join("")}</div></div>`).join("")}
   ${series.length?`<div class="block"><h2>Next in your series</h2><p class="muted small">You've started these. Here's the next one in each that you haven't read.</p>
     <ul class="books">${series.map(x=>bookCard(x.b,{ctx:"ser", note:x.gap?`${x.name} #${x.k}`:`${x.name} #${x.k}, after ${x.after.t}`})).join("")}</ul></div>`:""}
   ${read.length?`<div class="block"><h2>Your shelf</h2><p class="muted small">Spine width is book length. The bolder the color, the higher your rating.</p>
@@ -431,6 +471,30 @@ function insights(){
   const auth={}; readBooks().forEach(b=>auth[b.a]=(auth[b.a]||0)+1); const rep=Object.entries(auth).filter(([,n])=>n>1).sort((a,b)=>b[1]-a[1]).slice(0,3);
   if(rep.length) out.push(`Most-read author${rep.length>1?"s":""}: ${rep.map(([a,n])=>`${esc(a)} (${n})`).join(", ")}.`);
   return out;
+}
+
+/* ---------- "Because you loved…" rows ---------- */
+function tile(b, note){ const f = fit(b.id); return `<button class="tile" data-act="open" data-id="${b.id}" title="${esc(b.t)}">${coverEl(b).replace('class="cover"','class="cover tcv"')}<span class="tt">${esc(b.t)}</span><span class="ta">${esc(b.a)}</span><span class="tf">${(()=>{ const e = entry(b.id)||{}; return e.st==="read" ? (e.r?starTxt(e.r):"Read") : e.st==="reading" ? `${e.pct||0}% read` : e.st==="dnf" ? "Didn't finish" : `${e.st==="want"?"On your list · ":""}${f.fit} fit`; })()}</span></button>`; }
+function becauseRows(exclude){
+  if(RATED.length<3) return [];
+  const used = new Set(exclude), rows = [];
+  const pool = candidates().filter(b=>!seriesBlocked(b));
+  const seeds = [...RATED].sort((a,b)=>(PREFS.favorites.includes(b.id)?1:0)-(PREFS.favorites.includes(a.id)?1:0) || b.r-a.r || (b.rw||1)-(a.rw||1)).filter(b=>b.r>=4.5);
+  const seenSeedAuthors = new Set();
+  for(const sd of seeds){
+    if(rows.length>=3) break; if(seenSeedAuthors.has(sd.a)) continue;
+    const picks = diversify(pool.filter(b=>!used.has(b.id) && b.a!==sd.a).map(b=>({b, k: similarity(b, sd)*0.7 + fit(b.id).fit/100*0.3})).sort((x,y)=>y.k-x.k).slice(0,40), x=>x.b).slice(0,8);
+    if(picks.length<4) continue;
+    picks.forEach(x=>used.add(x.b.id)); seenSeedAuthors.add(sd.a);
+    rows.push({title:`Because you loved ${sd.t}`, books:picks.map(x=>x.b)});
+  }
+  const auth = {}; RATED.forEach(b=>{ (auth[b.a] ||= []).push(b.r); });
+  const loved = Object.entries(auth).filter(([,r])=>r.length>=2 && r.reduce((a,c)=>a+c,0)/r.length>=4.2).map(([a])=>a);
+  if(loved.length){
+    const books = diversify(pool.filter(b=>loved.includes(b.a) && !used.has(b.id)).sort((a,c)=>fit(c.id).score-fit(a.id).score)).slice(0,8);
+    if(books.length>=2) rows.push({title:"More from authors you rate highly", books});
+  }
+  return rows;
 }
 
 /* ---------- reading goal ---------- */
@@ -508,7 +572,7 @@ function renderYear(){
     <div class="panel block"><h3>Books by month</h3>${hbars(months,"")}</div>
     <div class="panel block"><h3>By genre</h3>${hbars(lanes," books")}</div>
   </div>
-  ${undated?`<p class="muted small">${undated} read book${undated===1?" has":"s have"} no finish date, so ${undated===1?"it isn't":"they aren't"} counted here. Add dates in My books.</p>`:""}`;
+  ${undated?`<p class="muted small">${undated} read book${undated===1?" has":"s have"} no finish date, so ${undated===1?"it isn't":"they aren't"} counted here. <a href="#cleanup">Add dates on the Clean up page</a>.</p>`:""}`;
 }
 
 
@@ -645,7 +709,7 @@ async function saveWrapped(share){
 }
 
 /* ---------- Discover ---------- */
-const FS = Object.assign({mode:"fit", like:null, len:"any", lanes:null, series:"any", pace:"any", must:[], hooksMin:0, award:false, all:false, preset:"best"}, (()=>{ try{ return JSON.parse(localStorage.getItem("bookshelf-find"))||{}; }catch(e){ return {}; } })());
+const FS = Object.assign({mode:"fit", like:null, len:"any", lanes:null, series:"any", pace:"any", must:[], any:[], not:[], hooksMin:0, award:false, all:false, preset:"best"}, (()=>{ try{ return JSON.parse(localStorage.getItem("bookshelf-find"))||{}; }catch(e){ return {}; } })());
 function presets(){
   const favs = PREFS.favorites.map(book).filter(Boolean).slice(0,3);
   return [
@@ -658,10 +722,23 @@ function presets(){
     ["different","Something different",{lanes:"off"}]
   ];
 }
+// Moods: quick ways in, regardless of the genres you picked.
+const MOODS = [
+  ["m-cantput","Can't put it down",{pace:"3", any:["twists","catmouse","mystery","survival"]}],
+  ["m-flight","Short enough for a flight",{len:"flight"}],
+  ["m-cozy","Cozy and comforting",{any:["funny","emotional","family"], not:["dark"]}],
+  ["m-dark","Dark and twisty",{must:["dark"], any:["twists","catmouse","mystery"]}],
+  ["m-epic","Big summer epic",{len:"long+", any:["epic","worldbuild","family"]}],
+  ["m-ideas","Big ideas",{must:["ideas"]}],
+  ["m-true","True stories",{must:["truestory"]}],
+  ["m-love","A love story",{must:["romance"]}],
+  ["m-laugh","Make me laugh",{must:["funny"], not:["dark"]}],
+  ["m-tears","Make me cry",{must:["emotional"]}]
+];
 function applyPreset(key){
-  const p = presets().find(x=>x[0]===key); if(!p) return; const v = p[2];
-  Object.assign(FS, {preset:key, mode:v.mode||"fit", like:v.like||FS.like, len:v.len||"any", pace:v.pace||"any", must:[], hooksMin:v.hooksMin||0, series:"any", award:!!v.award, all:false});
-  FS.lanes = v.lanes==="all" ? [...LANES] : v.lanes==="off" ? LANES.filter(l=>PREFS.lanes.length && !PREFS.lanes.includes(l)) : null;
+  const p = presets().concat(MOODS).find(x=>x[0]===key); if(!p) return; const v = p[2], mood = key.startsWith("m-");
+  Object.assign(FS, {preset:key, mode:v.mode||"fit", like:v.like||FS.like, len:v.len||"any", pace:v.pace||"any", must:[...(v.must||[])], any:[...(v.any||[])], not:[...(v.not||[])], hooksMin:v.hooksMin||0, series:"any", award:!!v.award, all:false});
+  FS.lanes = mood || v.lanes==="all" ? [...LANES] : v.lanes==="off" ? LANES.filter(l=>PREFS.lanes.length && !PREFS.lanes.includes(l)) : null;
 }
 const fLanes = () => FS.lanes || (PREFS.lanes.length ? PREFS.lanes : [...LANES]);
 function findResults(){
@@ -669,10 +746,11 @@ function findResults(){
   let list = candidates().filter(b=>
     (!b.lane || lanes.includes(b.lane)) && inLen(b.p, FS.len) && (FS.pace==="any" || String(b.pace)===FS.pace) &&
     (FS.series==="any" || (FS.series==="standalone" ? (!b.series || /stands alone/.test(b.series)) : (b.series && !/stands alone/.test(b.series)))) &&
-    FS.must.every(t=>b.tags.includes(t)) && fit(b.id).hooks.length>=FS.hooksMin && (!FS.award || b.aw));
+    FS.must.every(t=>b.tags.includes(t)) && (!FS.any.length || FS.any.some(t=>b.tags.includes(t))) && !FS.not.some(t=>b.tags.includes(t)) &&
+    fit(b.id).hooks.length>=FS.hooksMin && (!FS.award || b.aw) && (status(b.id)==="want" || !seriesBlocked(b)));
   list = list.map(b=>{ const f=fit(b.id); const sim = like ? similarity(b, like) : 0; return {b, key: like ? sim*0.7+(f.fit/100)*0.3 : f.score, sim}; });
   list.sort((a,c)=>c.key-a.key);
-  return list;
+  return diversify(list, x=>x.b);
 }
 function renderDiscoverControls(){
   const tagOpts = ["narrator","catmouse","twists","underdog","mystery","spy","time","heist","war","academy","worldbuild","science","funny","emotional","epic","truestory","sports","space"];
@@ -681,6 +759,7 @@ function renderDiscoverControls(){
   <div class="block"><div class="eyebrow">Discover</div><h2>What are you in the mood for?</h2>
     <p class="lede">Ranked by fit: how you rated the books most like each one, plus a boost for what you said hooks you. ${RATED.length<5?"Rate more of what you've read and this gets sharper.":""}</p></div>
   <div class="panel controls">
+    <div class="ctrl"><span class="lbl">Moods</span><div class="chips">${MOODS.map(([k,l])=>`<button class="chip" data-preset="${k}" aria-pressed="${FS.preset===k}">${esc(l)}</button>`).join("")}</div></div>
     <div class="ctrl"><span class="lbl">Start from</span><div class="chips">${presets().map(([k,l])=>`<button class="chip" data-preset="${k}" aria-pressed="${FS.preset===k}">${esc(l)}</button>`).join("")}</div></div>
     ${readOpts.length?`<div class="ctrl"><span class="lbl">Rank by</span><div class="chips"><button class="chip" data-fmode="fit" aria-pressed="${FS.mode==="fit"}">Best fit for you</button><button class="chip" data-fmode="like" aria-pressed="${FS.mode==="like"}">Most like a book you've read</button>
       <select id="f-like" aria-label="Book to compare against" style="width:auto;min-width:12rem"${FS.mode==="like"?"":" hidden"}>${readOpts.map(b=>`<option value="${b.id}"${FS.like===b.id?" selected":""}>${esc(b.t)}${b.r?` (${starTxt(b.r)})`:""}</option>`).join("")}</select></div></div>`:""}
@@ -706,6 +785,9 @@ function renderDiscoverResults(){
 }
 
 /* ---------- My books ---------- */
+const UI = Object.assign({grid:false}, (()=>{ try{ return JSON.parse(localStorage.getItem("bookshelf-ui"))||{}; }catch(e){ return {}; } })());
+const saveUI = () => { try{ localStorage.setItem("bookshelf-ui", JSON.stringify(UI)); }catch(e){} };
+const viewToggle = () => `<div class="chips" role="group" aria-label="View"><button class="chip" data-grid="0" aria-pressed="${!UI.grid}">List</button><button class="chip" data-grid="1" aria-pressed="${UI.grid}">Covers</button></div>`;
 const MB = {tab:"read", sort:"recent", onlySparse:false, fmt:"any"};
 function renderMyBooks(){
   const groups = {read:[],reading:[],want:[],dnf:[],passed:[]};
@@ -724,7 +806,8 @@ function renderMyBooks(){
   <div class="resultbar"><div class="chips">${Object.keys(labels).map(k=>`<button class="chip" data-mbtab="${k}" aria-pressed="${MB.tab===k}">${labels[k]} (${groups[k].length})</button>`).join("")}</div>
     <div class="actions"><label class="ctrl" style="min-width:11rem"><span class="lbl">Sort</span><select id="mb-sort">${sortOpts.map(([v,l])=>`<option value="${v}"${MB.sort===v?" selected":""}>${l}</option>`).join("")}</select></label><label class="ctrl" style="min-width:9rem"><span class="lbl">Format</span><select id="mb-fmt"><option value="any">Any format</option>${Object.entries(FORMATS).map(([k,l])=>`<option value="${k}"${MB.fmt===k?" selected":""}>${l}</option>`).join("")}</select></label><button class="btn" data-act="addbook">Add a book</button></div></div>
   ${MB.onlySparse?`<p class="notice">Showing books that need quick details. <a href="#mybooks" data-act="allbooks">Show all</a></p>`:""}
-  ${list.length?`<ul class="books">${list.map(b=>bookCard(b,{ctx:"mb"})).join("")}</ul>`:`<p class="empty">${MB.tab==="read"?"Books you finish go here. Tap “Add a book” to log ones you've already read.":MB.tab==="want"?"Your to-read list is empty. Add books from Discover or Browse.":MB.tab==="reading"?"Nothing in progress.":MB.tab==="dnf"?"Books you stop partway go here, with where you stopped. Open a book and tap “Didn't finish”.":"Books you pass on go here and stop showing up in recommendations."}</p>`}`;
+  <div class="resultbar"><span class="muted small">${list.length} book${list.length===1?"":"s"}</span>${viewToggle()}</div>
+  ${list.length?(UI.grid?`<div class="grid-covers">${list.map(b=>tile(b)).join("")}</div>`:`<ul class="books">${list.map(b=>bookCard(b,{ctx:"mb"})).join("")}</ul>`):`<p class="empty">${MB.tab==="read"?"Books you finish go here. Tap “Add a book” to log ones you've already read.":MB.tab==="want"?"Your to-read list is empty. Add books from Discover or Browse.":MB.tab==="reading"?"Nothing in progress.":MB.tab==="dnf"?"Books you stop partway go here, with where you stopped. Open a book and tap “Didn't finish”.":"Books you pass on go here and stop showing up in recommendations."}</p>`}`;
 }
 
 /* ---------- Browse ---------- */
@@ -779,12 +862,14 @@ function renderBrowseControls(){
   <div id="b-results" class="block"></div>`;
 }
 function renderBrowseResults(){
-  const list = CAT.filter(browseMatches).sort(browseSort);
+  let list = CAT.filter(browseMatches).sort(browseSort);
+  if(BS.sort==="fit" && !BS.q.trim()) list = diversify(list);
   const n = ["len","pace","talk","pov","era","series"].filter(k=>BS[k]!=="any").length + BS.lanes.length + BS.tags.length + (BS.award?1:0) + (BS.hideShelf?1:0);
   const a = $("#b-active"); if(a) a.textContent = n ? `· ${n} active` : "";
   const el = $("#b-results"); if(!el) return;
   el.innerHTML = `<div class="resultbar"><h3>${fmt(list.length)} book${list.length===1?"":"s"}</h3><span class="muted small">Fit is your predicted rating on a 0–100 scale: 60 ≈ 4★, 80 ≈ 4.5★.</span></div>
-    ${list.length?`<ul class="books">${list.slice(0,BS.limit).map(b=>bookCard(b,{ctx:"br"})).join("")}</ul>`:`<p class="empty">No books match. <button class="btn ghost" data-act="bclear">Clear filters</button></p>`}
+    <div class="resultbar"><span></span>${viewToggle()}</div>
+    ${list.length?(UI.grid?`<div class="grid-covers">${list.slice(0,BS.limit).map(b=>tile(b)).join("")}</div>`:`<ul class="books">${list.slice(0,BS.limit).map(b=>bookCard(b,{ctx:"br"})).join("")}</ul>`):`<p class="empty">No books match. <button class="btn ghost" data-act="bclear">Clear filters</button></p>`}
     ${list.length>BS.limit?`<button class="btn ghost" data-act="bmore">Show more (${fmt(list.length-BS.limit)} left)</button>`:""}`;
 }
 
@@ -830,6 +915,7 @@ function renderTaste(){
     <div class="panel block"><h3>When they were published</h3>${hbars(Object.keys(dec).sort().map(d=>({label:d,v:dec[d]}))," books")}</div>
   </div>
   ${tagRows.length?`<div class="panel block"><h3>By theme</h3><p class="muted small">Themes in at least two of your rated books. Bold rows are the ones you said hook you.</p>${dotPlot(tagRows,ref)}</div>`:""}
+  ${heatmap()}
   ${tunedPanel()}
   <div class="panel block"><h3>How fit scores work</h3>
     <p>For each book, Bookshelf finds the books you've rated that are most like it (genre, themes, narration, pace, dialogue, length and era), averages your ratings of those with the closest counting most, and blends in how you rate each theme. Themes count by how rare they are: sharing "Heist or con" says more than sharing "Dark". Authors you've rated twice or more pull their other books toward how you rated them. Award winners get a small lift, mostly while you've rated only a few books. Books with the things you said hook you get a boost, and genres you didn't pick get a small penalty. Your favorites count extra. Once you've rated 15 books, the weights adjust to whatever best predicts your own ratings. Books you didn't finish or passed on count a little against books very like them (but never for having lots of dialogue).</p>
@@ -847,6 +933,111 @@ function tunedPanel(){
   const say = m => m===0 ? "ignored for you" : m<1 ? "counts half as much" : m>=3 ? "counts 3× as much" : "counts twice as much";
   return `<div class="panel block"><h3>Tuned to you</h3><p class="small">Tested on your ${T.n} ratings (hiding each one and predicting it from the rest), these changes made predictions more accurate: off by ${fmt1(T.after)}★ on average instead of ${fmt1(T.before)}★.</p>
     <ul class="insights">${rows.map(x=>`<li><b>${names[x.k]}</b> ${say(x.m)}.</li>`).join("")}</ul><p class="muted small">It re-checks every time you rate 5 more books.</p></div>`;
+}
+
+/* ---------- reading calendar ---------- */
+function heatmap(){
+  const days = 371, end = new Date(); end.setHours(12,0,0,0);
+  const start = new Date(end); start.setDate(start.getDate() - days + 1); start.setDate(start.getDate() - start.getDay());
+  const fins = {}; readBooks().forEach(b=>{ if(b.fin) fins[b.fin] = (fins[b.fin]||[]).concat(b.t); });
+  const cells = []; let active = 0, streak = 0, best = 0, run = 0, pages = 0;
+  for(let d = new Date(start); d <= end; d.setDate(d.getDate()+1)){
+    const k = d.toISOString().slice(0,10), n = S.log[k]||0, f = fins[k];
+    const lvl = n>=60?4:n>=30?3:n>=10?2:(n>0||f)?1:0;
+    if(lvl){ active++; run++; best = Math.max(best, run); } else run = 0;
+    pages += n;
+    cells.push(`<i class="h${lvl}" title="${dateTxt(k)}${n?`: ${n} pages`:""}${f?` · finished ${esc(f.join(", "))}`:""}"></i>`);
+  }
+  streak = run;
+  const hasData = Object.keys(S.log).length || Object.keys(fins).length;
+  if(!hasData) return "";
+  return `<div class="panel block"><h3>Your reading days</h3>
+    <p class="muted small">Each square is a day: darker means more pages, logged when you update a book's page or progress. Days you finished a book count too.</p>
+    <div class="heat" aria-label="Reading calendar, past year">${cells.join("")}</div>
+    <div class="legend"><span>${active} reading day${active===1?"":"s"} in the past year</span><span>Current streak: ${streak} day${streak===1?"":"s"}</span><span>Longest streak: ${best}</span>${pages?`<span>${fmt(pages)} pages logged</span>`:""}</div></div>`;
+}
+
+/* ---------- Series tracker ---------- */
+const SERP = {focus:null};
+function renderSeries(){
+  const stOf = id => status(id);
+  let list = Object.entries(SERIES).map(([name, items])=>{
+    const total = (()=>{ const m = /of (\d+)/.exec(items[0].b.series||""); return m ? +m[1] : null; })();
+    const read = items.filter(x=>stOf(x.b.id)==="read").length, any = items.some(x=>stOf(x.b.id));
+    const nx = seriesNext().find(x=>x.name===name);
+    return {name, items, total, read, any, nx};
+  }).filter(x=>x.any || x.name===SERP.focus);
+  list.sort((a,b)=>(b.name===SERP.focus)-(a.name===SERP.focus) || ((b.read>0 && b.read<b.items.length)-(a.read>0 && a.read<a.items.length)) || b.read-a.read || a.name.localeCompare(b.name));
+  const lbl = {read:"Read",reading:"Reading",want:"On your list",dnf:"Didn't finish",passed:"Not for me"};
+  $("#v-series").innerHTML = `<div class="block"><div class="eyebrow">Series tracker</div><h2>Your series</h2>
+    <p class="lede">Every series you've started or saved a book from. Numbers come from the catalog, which may not have every book in a long series.</p></div>
+    ${list.length?list.map(x=>`<div class="panel block" id="ser-${esc(slug(x.name))}"><div class="resultbar"><h3>${esc(x.name)}</h3><span class="muted small">${x.read} read${x.total?` of ${x.total}`:` · ${x.items.length} in the catalog`}</span></div>
+      <div class="progress"><i style="width:${Math.round(x.read/(x.total||x.items.length)*100)}%"></i></div>
+      <div class="serlist">${x.items.map(it=>{ const s2 = stOf(it.b.id), e = entry(it.b.id)||{}; return `<button class="serit ${s2||"none"}" data-act="open" data-id="${it.b.id}"><b>#${it.k}</b> ${esc(it.b.t)} <span class="muted small">${s2?lbl[s2]+(s2==="read"&&e.r?` · ${starTxt(e.r)}`:""):""}</span></button>`; }).join("")}</div>
+      ${x.nx?`<p class="small">Next up: <a href="#book=${encodeURIComponent(x.nx.b.id)}">${esc(x.nx.b.t)}</a>${x.nx.gap?` (#${x.nx.k})`:""}</p>`:x.read===x.items.length?`<p class="small muted">You've read every book from this series that's in the catalog.</p>`:""}</div>`).join(""):`<p class="empty">No series yet. Mark a book from a series as read or want-to-read and it shows up here.</p>`}`;
+  if(SERP.focus){ const el = document.getElementById("ser-"+slug(SERP.focus)); SERP.focus = null; if(el) setTimeout(()=>el.scrollIntoView({block:"start"}), 30); }
+}
+
+/* ---------- Clean up ---------- */
+function cleanupIssues(){
+  const read = Object.entries(S.shelf).filter(([,e])=>e.st==="read").map(([id])=>book(id)).filter(Boolean);
+  return {
+    sugg: Object.entries(S.suggest).filter(([c,t])=>S.custom[c] && CATMAP[t]),
+    nodate: read.filter(b=>!entry(b.id).fin),
+    norate: read.filter(b=>!entry(b.id).r),
+    nofmt: Object.entries(S.shelf).filter(([,e])=>["read","reading","dnf"].includes(e.st) && !e.fmt).map(([id])=>book(id)).filter(Boolean),
+    sparse: Object.values(S.custom).filter(b=>status(b.id)==="read" && isSparse(b))
+  };
+}
+function renderCleanup(){
+  const I = cleanupIssues(), total = I.sugg.length + I.nodate.length + I.norate.length + I.nofmt.length + I.sparse.length;
+  const row = (b, ctl) => `<div class="crow">${coverEl(b)}<span class="ct2"><b>${esc(b.t)}</b><br><span class="muted small">${esc(b.a)}</span></span><span class="cc">${ctl}</span></div>`;
+  const sec = (title, why, items, f, max=25) => items.length ? `<div class="panel block"><div class="resultbar"><h3>${title}</h3><span class="muted small">${items.length}</span></div><p class="muted small">${why}</p>${items.slice(0,max).map(f).join("")}${items.length>max?`<p class="muted small">Showing ${max}. Fix these and the rest appear.</p>`:""}</div>` : "";
+  $("#v-cleanup").innerHTML = `<div class="block"><div class="eyebrow">Clean up</div><h2>Tidy your shelf</h2><p class="lede">${total?`${total} thing${total===1?"":"s"} to look at. Each one makes your stats, year in review or recommendations more accurate.`:"Everything's in order. Nothing to fix."}</p></div>
+  ${sec("Did you mean…?","These imported books look like catalog books under a slightly different title. Matching them gives you fit scores, covers and full details.", I.sugg, ([c,t])=>`<div class="crow">${coverEl(CATMAP[t])}<span class="ct2"><span class="muted small">You have</span> <b>${esc(S.custom[c].t)}</b> <span class="muted small">by ${esc(S.custom[c].a)}</span><br><span class="muted small">Catalog has</span> <b>${esc(CATMAP[t].t)}</b> <span class="muted small">by ${esc(CATMAP[t].a)}${CATMAP[t].y?`, ${CATMAP[t].y}`:""}</span></span><span class="cc"><button class="btn" data-act="sugyes" data-c="${esc(c)}">Same book</button><button class="btn quiet" data-act="sugno" data-c="${esc(c)}">Different</button></span></div>`)}
+  ${sec("No finish date","Books only count toward your yearly goal, year in review and reading pace once they have a finish date. A rough guess is fine.", I.nodate, b=>row(b, `<input type="date" data-date="fin" data-id="${esc(b.id)}" aria-label="Finish date for ${esc(b.t)}">`))}
+  ${sec("Not rated","Ratings are what recommendations learn from. Tap a star; tap again for a half.", I.norate, b=>row(b, ratingSelect(b.id, null, "data-rate", "Rating")))}
+  ${sec("No format","Print, ebook or audiobook. Optional, but it feeds the format chart and your year in review.", I.nofmt, b=>row(b, `<div class="chips">${Object.entries(FORMATS).map(([k,l])=>`<button class="chip" data-fmt="${k}" data-id="${esc(b.id)}">${l}</button>`).join("")}</div>`))}
+  ${I.sparse.length?`<div class="panel block"><div class="resultbar"><h3>Missing details</h3><span class="muted small">${I.sparse.length}</span></div><p class="muted small">Books from outside the catalog need a few quick details (genre, pace, themes) to count fully toward recommendations.</p><div class="actions"><button class="btn ghost" data-act="showsparse">Fill them in</button>${Object.values(S.custom).some(b=>!b.lane)?`<button class="btn ghost" data-act="olfill">Look up genres on Open Library</button>`:""}</div><p class="muted small" id="olfill-msg"></p></div>`:""}`;
+}
+
+/* ---------- Book page ---------- */
+const libLinks = b => { const q = encodeURIComponent(`${b.t} ${String(b.a).split(/ & | and |,/)[0]}`);
+  return [["Libby (library ebooks and audiobooks)",`https://libbyapp.com/search/query-${q}/page-1`],["WorldCat (find it at a library near you)",`https://search.worldcat.org/search?q=${q}`],["Bookshop.org (buy from indie bookstores)",`https://bookshop.org/search?keywords=${q}`],["Goodreads",`https://www.goodreads.com/search?q=${q}`]]; };
+let FRIENDS_DATA = null;
+async function loadFriends(){
+  if(FRIENDS_DATA) return FRIENDS_DATA;
+  const out = []; for(const f of Object.values(S.friends)){ try{ const F = cleanFriend(await unpack(f.code)); if(F) out.push(F); }catch(e){} }
+  return FRIENDS_DATA = out;
+}
+async function renderBook(id){
+  const b = book(id), el = $("#v-book");
+  if(!b){ el.innerHTML = `<div class="block"><h2>Book not found</h2><p class="lede">It may have been removed from the catalog.</p><p><a href="#home">Go home</a></p></div>`; return; }
+  const s2 = status(id), e = entry(id)||{}, f = fit(id), sp = parseSeries(b.series);
+  const like = diversify(CAT.filter(x=>x.id!==id && x.a!==b.a).map(x=>({x, k:similarity(x,b)})).sort((p,q)=>q.k-p.k).slice(0,40), y=>y.x).slice(0,10).map(y=>y.x);
+  const byA = CAT.filter(x=>x.a===b.a && x.id!==id).sort((p,q)=>(p.y||0)-(q.y||0));
+  const meta = [b.y?(b.y<0?-b.y+" BC":b.y):"", b.p?fmt(b.p)+" pages":"", b.lane?(b.sub?`${b.lane} · ${b.sub}`:b.lane):""].filter(Boolean).join(" · ");
+  el.innerHTML = `<p><button class="btn quiet" data-act="back">← Back</button></p>
+  <div class="bookhead">${coverEl(b).replace('class="cover"','class="cover xl"')}
+    <div class="block" style="align-content:center">
+      ${b.series?`<div class="eyebrow">${sp?`<a href="#series" data-act="seriespage" data-n="${esc(sp.name)}">${esc(b.series)}</a>`:esc(b.series)}</div>`:""}
+      <h1>${esc(b.t)}</h1>
+      <p class="lede" style="margin-top:0"><a href="#browse" data-act="author" data-a="${esc(b.a)}">${esc(b.a)}</a>${meta?` · ${esc(meta)}`:""}</p>
+      ${b.hook?`<p>${esc(b.hook)}</p>`:""}
+      <div class="actions">${scoreBadge(b)}<span class="small">${s2==="read"?(e.r?`You rated it ${starTxt(e.r)}.`:"You've read it. Rate it below."):s2==="dnf"?`You stopped at ${e.pct||0}%.`:s2==="reading"?`You're ${e.pct||0}% through.`:RATED.length?`Predicted ${fmt1(f.pred)}★ for you${f.conf==="low"?" (best guess)":f.conf==="high"?" (confident)":""}.`:"Rate a few books and you'll see a prediction here."}</span>
+        <button class="btn ghost" data-act="sharebook" data-id="${esc(id)}">Share</button></div>
+    </div></div>
+  ${trackBox(b)}${quickDetails(b)}
+  ${(!s2||s2==="want"||s2==="passed")?`<div class="panel block"><h3>Why it could work</h3><ul class="why">${whyLines(b).map(l=>`<li>${esc(l)}</li>`).join("")}</ul>
+    ${RATED.length?`<div class="near"><div class="eyebrow">Closest books you've read</div>${f.near.map(x=>`<div class="nearrow"><span>${esc(x.r.t)} <span class="muted">${starTxt(x.r.r)}</span></span><span class="bar"><i style="width:${Math.round(x.score*100)}%"></i></span><span class="muted small">${Math.round(x.score*100)}%</span></div>`).join("")}</div>`:""}</div>`:""}
+  <div class="panel block"><h3>Details</h3>${statsGrid(b, e)}${b.tags.length?`<div>${b.tags.map(t=>TAGS[t]?`<button class="tag tagbtn${PREFS.hooks.includes(t)?" hook":""}" data-act="theme" data-t="${t}">${esc(TAGS[t])}</button>`:"").join("")}</div>`:""}</div>
+  ${sp&&SERIES[sp.name]&&SERIES[sp.name].length>1?`<div class="block"><h2>${esc(sp.name)}</h2><div class="strip">${SERIES[sp.name].map(x=>tile(x.b)).join("")}</div></div>`:""}
+  <div id="bk-friends"></div>
+  ${like.length?`<div class="block"><h2>Most like this</h2><div class="strip">${like.map(x=>tile(x)).join("")}</div></div>`:""}
+  ${byA.length?`<div class="block"><h2>More by ${esc(b.a)}</h2><div class="strip">${byA.map(x=>tile(x)).join("")}</div></div>`:""}
+  <div class="panel block"><h3>Find it</h3><ul class="insights">${libLinks(b).map(([l,u])=>`<li><a href="${u}" target="_blank" rel="noopener noreferrer">${esc(l)}</a></li>`).join("")}</ul></div>`;
+  if(Object.keys(S.friends).length){ const F = await loadFriends(); const hits = F.map(fr=>({fr, x:fr.books.find(y=>y.id===id)})).filter(h=>h.x); const box = $("#bk-friends");
+    if(box && hits.length) box.innerHTML = `<div class="panel block"><h3>Your friends</h3><ul class="insights">${hits.map(h=>`<li><b>${esc(h.fr.name)}</b> ${h.x.r?`rated it ${starTxt(h.x.r)}`:"read it"}${h.x.fav?", one of their all-time favorites":""}.</li>`).join("")}</ul></div>`; }
 }
 
 /* ---------- Quick rate ---------- */
@@ -904,6 +1095,7 @@ function renderProfile(){
       ${missing.length?`<p class="small">${missing.length} book${missing.length>1?"s on your shelf aren't":" on your shelf isn't"} in the Bookshelf catalog. Copy the list and send it to whoever runs this site so they can be added with full details.</p>
       <div class="actions"><button class="btn ghost" data-act="copymissing">Copy list</button></div>
       <textarea id="missing-list" readonly rows="4">${esc(missing.map(b=>`${b.t} — ${b.a}`).join("\n"))}</textarea>`:`<p class="muted small">Every book on your shelf is in the catalog.</p>`}
+      <p class="muted small">Running this site? <a href="editor.html">Open the catalog editor</a> to add books.</p>
     </div>
   </div>
   <div class="panel block"><h3>About Bookshelf</h3>
@@ -912,6 +1104,48 @@ function renderProfile(){
     <p class="small">Recommendations come from a catalog of ${fmt(CAT.length)} books, each described by hand with its themes, pace, dialogue level, narration, setting and era. Books you add that aren't in the catalog get basic details from Open Library, which you can complete with a few quick taps. Nothing you enter leaves this device. The only outside requests go to Open Library: cover images (unless you turn them off above) and searches when you look up a book that isn't in the catalog. Page counts are approximate and vary by edition.</p>
     <div class="actions"><button class="btn quiet" data-act="redo">Redo the setup questions</button><button class="btn quiet" data-act="reset" id="reset-btn">Erase everything on this device</button></div>
   </div>`;
+}
+
+/* ---------- Search anywhere ---------- */
+const SR = {q:"", sel:0, items:[]};
+function openSearch(){ $("#search").hidden=false; document.body.style.overflow="hidden"; renderSearch(); setTimeout(()=>{ const i=$("#s-q"); if(i){ i.focus(); i.select(); } }, 30); }
+function closeSearch(){ $("#search").hidden=true; document.body.style.overflow=""; }
+function renderSearch(){
+  $("#search-inner").innerHTML = `<div class="resultbar"><h2>Search</h2><button class="btn quiet" data-act="closesearch">Close</button></div>
+    <input type="search" id="s-q" placeholder="Title, author, series or theme" value="${esc(SR.q)}" aria-label="Search books, authors and series" autocomplete="off"><div id="s-res" class="sres"></div>`;
+  renderSearchResults();
+}
+function renderSearchResults(){
+  const el = $("#s-res"); if(!el) return;
+  const q = SR.q.trim().toLowerCase(); SR.items = [];
+  if(q.length<2){ el.innerHTML = `<p class="muted small">Search ${fmt(CAT.length)} catalog books and your own shelf. Press Enter to open the top result.</p>`; return; }
+  const mine = Object.values(S.custom).filter(b=>status(b.id) && (b.t+" "+b.a).toLowerCase().includes(q));
+  const books = mine.concat(searchCatalog(q, 10)).slice(0,10);
+  const authors = {}; CAT.forEach(b=>{ if(b.a.toLowerCase().includes(q)) authors[b.a]=(authors[b.a]||0)+1; });
+  const series = Object.keys(SERIES).filter(n=>n.toLowerCase().includes(q)).slice(0,5);
+  const themes = Object.entries(TAGS).filter(([,l])=>l.toLowerCase().includes(q)).slice(0,4);
+  let h = "";
+  if(books.length){ h += `<h3>Books</h3>` + books.map(b=>{ SR.items.push({act:"open", id:b.id}); const s=status(b.id); return `<button data-act="open" data-id="${b.id}">${coverEl(b)}<span><b>${esc(b.t)}</b><br><span class="muted small">${esc(b.a)}${b.y?` · ${b.y<0?-b.y+" BC":b.y}`:""}${s?` · ${{read:"Read",reading:"Reading",want:"On your list",dnf:"Didn't finish",passed:"Not for me"}[s]}`:""}</span></span></button>`; }).join(""); }
+  const al = Object.entries(authors).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if(al.length){ h += `<h3>Authors</h3>` + al.map(([a,n])=>{ SR.items.push({act:"author", a}); return `<button data-act="author" data-a="${esc(a)}"><span><b>${esc(a)}</b> <span class="muted small">${n} book${n>1?"s":""}</span></span></button>`; }).join(""); }
+  if(series.length){ h += `<h3>Series</h3>` + series.map(n=>{ SR.items.push({act:"seriespage", n}); return `<button data-act="seriespage" data-n="${esc(n)}"><span><b>${esc(n)}</b> <span class="muted small">${SERIES[n].length} in the catalog</span></span></button>`; }).join(""); }
+  if(themes.length){ h += `<h3>Themes</h3>` + themes.map(([t,l])=>{ SR.items.push({act:"theme", t}); return `<button data-act="theme" data-t="${t}"><span><b>${esc(l)}</b> <span class="muted small">browse books with this theme</span></span></button>`; }).join(""); }
+  el.innerHTML = h || `<p class="muted small">Nothing matches. Try “Add a book” to search Open Library.</p>`;
+}
+function openMore(){
+  $("#search").hidden=false; document.body.style.overflow="hidden";
+  const y = new Date().getFullYear(), th = S.profile.theme||"auto";
+  $("#search-inner").innerHTML = `<div class="resultbar"><h2>More</h2><button class="btn quiet" data-act="closesearch">Close</button></div>
+    <nav class="menu">
+      <a href="#taste" data-act="closesearch">My taste <span class="muted">›</span></a>
+      <a href="#year" data-act="closesearch">Your ${y} in books <span class="muted">›</span></a>
+      <a href="#series" data-act="closesearch">Series tracker <span class="muted">›</span></a>
+      <a href="#cleanup" data-act="closesearch">Clean up my data <span class="muted">›</span></a>
+      <a href="#rate" data-act="closesearch">Quick-rate books <span class="muted">›</span></a>
+      <a href="#profile" data-act="closesearch">Profile, backup and friends <span class="muted">›</span></a>
+      <button data-act="search">Search <span class="muted">›</span></button>
+    </nav>
+    <div class="ctrl"><span class="lbl">Appearance</span><div class="chips">${[["auto","Match my device"],["light","Light"],["dark","Dark"]].map(([v,l])=>`<button class="chip" data-theme="${v}" aria-pressed="${th===v}">${l}</button>`).join("")}</div></div>`;
 }
 
 /* ---------- Add-a-book sheet ---------- */
@@ -978,6 +1212,18 @@ function parseCSV(text){
   if(f||row.length){ row.push(f); rows.push(row); }
   return rows.filter(r=>r.length>1);
 }
+// Near-miss matching: same author, title off by a subtitle, an "&", an edition note or a typo or two.
+function lev(a, b){ if(a===b) return 0; const m = a.length, n = b.length; if(!m||!n) return m||n; let prev = Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){ const cur=[i]; for(let j=1;j<=n;j++) cur[j] = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1)); prev = cur; } return prev[n]; }
+const BY_LAST = {}; CAT.forEach(b=>{ (BY_LAST[lastName(b.a)] ||= []).push(b); });
+function fuzzyMatch(t, a){
+  const T = normT(String(t).replace(/&/g," and ").replace(/\b(a novel|novel|unabridged|anniversary edition|deluxe edition)\b/gi,""));
+  const pool = BY_LAST[lastName(a)] || []; let best = null;
+  for(const c of pool){ const C = normT(c.t.replace(/&/g," and "));
+    const d = lev(T, C), ok = d <= Math.max(2, Math.floor(Math.min(T.length, C.length)*0.15)) || (Math.min(T.length,C.length)>=6 && (T.startsWith(C) || C.startsWith(T)));
+    if(ok && (!best || d < best.d)) best = {b:c, d}; }
+  return best && best.b;
+}
 function importGoodreads(text){
   const rows = parseCSV(text); if(!rows.length) return null;
   const h = rows[0].map(x=>x.trim()), col = n => h.indexOf(n);
@@ -987,12 +1233,14 @@ function importGoodreads(text){
   rows.slice(1).forEach(r=>{
     const t = r[col("Title")], a = r[col("Author")]; if(!t) return; n++;
     const shelf = r[col("Exclusive Shelf")], st = shelf==="read"?"read":shelf==="currently-reading"?"reading":shelf==="to-read"?"want":/^(dnf|did-not-finish|abandoned|didnt-finish|did-not-finish-dnf)$/i.test(shelf||"")?"dnf":null; if(!st) return;
-    let b = CATIDX[normT(t)+"|"+lastName(a)] || null;
+    let b = CATIDX[normT(t)+"|"+lastName(a)] || null, guess = null;
     if(b) matched++;
     else {
+      guess = fuzzyMatch(t, a);
       const id = "gr-"+slug(t)+"--"+slug(lastName(a)||"x");
       if(!S.custom[id]){ S.custom[id] = {id, t:t.replace(/\s*\(.*?#\d+.*?\)\s*$/,""), a, lane:null, sub:"", p:num(r[col("Number of Pages")]), y:num(r[col("Original Publication Year")])||num(r[col("Year Published")]), pov:null, era:null, talk:null, pace:null, series:"", tags:[], hook:"", set:"", aw:"", cat:false, src:"goodreads"}; added++; }
       b = S.custom[id];
+      if(guess && !S.shelf[guess.id]) S.suggest[id] = guess.id;
     }
     const my = num(r[col("My Rating")]), dr = (r[col("Date Read")]||"").replace(/\//g,"-"), avg = num(r[col("Average Rating")]);
     if(avg && !b.cat) b.gr = avg;
@@ -1002,10 +1250,15 @@ function importGoodreads(text){
     const bind = (r[col("Binding")]||"").toLowerCase();
     if(!e.fmt && bind) e.fmt = /audio|audible|mp3|cd/.test(bind) ? "audio" : /kindle|ebook|e-book|nook|epub|digital/.test(bind) ? "ebook" : /hardcover|paperback|mass market|board|library binding|leather/.test(bind) ? "print" : undefined;
     if(!e.fmt) delete e.fmt;
+    const reads = num(r[col("Read Count")]); if(reads>1) e.reads = Math.min(99, reads);
+    const dAdded = (r[col("Date Added")]||"").replace(/\//g,"-"); if(/^\d{4}-\d{2}-\d{2}$/.test(dAdded)) e.at = dAdded;
+    const rev = (r[col("My Review")]||"").replace(/<br\s*\/?>/gi,"\n").replace(/<[^>]+>/g,"").trim(); if(rev && !e.note) e.note = rev.slice(0,4000);
+    const shelves = (r[col("Bookshelves")]||"").toLowerCase();
+    if(st==="read" && /(^|,\s*)(favou?rites?|all-time-favou?rites?|favou?rite-books|best-books)(\s*,|$)/.test(shelves) && !S.profile.favorites.includes(b.id)) S.profile.favorites.push(b.id);
     S.shelf[b.id] = e;
   });
   adoptCatalogBooks(); save(); changed();
-  return {n, matched, added};
+  return {n, matched, added, suggested:Object.keys(S.suggest).length};
 }
 async function olFill(){
   const todo = Object.values(S.custom).filter(b=>!b.lane).slice(0,150);
@@ -1024,19 +1277,22 @@ async function olFill(){
 }
 
 /* ---------- routing ---------- */
-const VIEWS = ["home","discover","mybooks","browse","taste","profile","year","rate"];
+const VIEWS = ["home","discover","mybooks","browse","taste","profile","year","rate","series","cleanup"];
 const dirty = new Set(VIEWS); let current = null;
-const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","year","rate","friend","incoming"];
+const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","year","rate","series","cleanup","book","friend","incoming"];
 function showOnly(v){ ALLVIEWS.forEach(k=>$("#v-"+k).hidden = k!==v); }
 function show(v){
   v = v || "";
-  if(v.startsWith("transfer=")){ current="incoming"; $("#topbar").hidden=true; showOnly("incoming"); renderIncoming(v.slice(9)); window.scrollTo(0,0); return; }
-  if(v.startsWith("friend=")){ current="friend"; $("#topbar").hidden=!S.profile.onboarded; showOnly("friend"); $$(".tabs a").forEach(a=>a.setAttribute("aria-current","false")); renderFriend(v.slice(7)); window.scrollTo(0,0); return; }
-  if(!S.profile.onboarded){ current="onboard"; $("#topbar").hidden=true; showOnly("onboard"); renderOnboard(); return; }
-  $("#topbar").hidden=false;
+  if(v.startsWith("transfer=")){ current="incoming"; $("#topbar").hidden=true; $("#bottomnav").hidden=true; showOnly("incoming"); renderIncoming(v.slice(9)); window.scrollTo(0,0); return; }
+  if(v.startsWith("friend=")){ current="friend"; $("#topbar").hidden=!S.profile.onboarded; $("#bottomnav").hidden=!S.profile.onboarded; showOnly("friend"); $$(".tabs a").forEach(a=>a.setAttribute("aria-current","false")); renderFriend(v.slice(7)); window.scrollTo(0,0); return; }
+  if(v.startsWith("book=") && S.profile.onboarded){ current="book"; $("#topbar").hidden=false; $("#bottomnav").hidden=false; showOnly("book"); $$(".tabs a, .bottomnav [data-tab]").forEach(a=>a.setAttribute("aria-current","false")); renderBook(decodeURIComponent(v.slice(5))); window.scrollTo(0,0); return; }
+  if(!S.profile.onboarded){ current="onboard"; $("#topbar").hidden=true; $("#bottomnav").hidden=true; showOnly("onboard"); renderOnboard(); return; }
+  $("#topbar").hidden=false; $("#bottomnav").hidden=false;
   if(!VIEWS.includes(v)) v="home"; current=v;
   showOnly(v);
+  const tabOf = {taste:"more", profile:"more", year:"more", series:"more", cleanup:"more", rate:"more"}[v] || v;
   $$(".tabs a").forEach(a=>a.setAttribute("aria-current", a.dataset.tab===v?"page":"false"));
+  $$(".bottomnav [data-tab]").forEach(a=>a.setAttribute("aria-current", a.dataset.tab===tabOf?"page":"false"));
   if(dirty.has(v)) renderView(v);
   window.scrollTo(0,0);
 }
@@ -1050,16 +1306,20 @@ function renderView(v){
   if(v==="profile") renderProfile();
   if(v==="year") renderYear();
   if(v==="rate") renderRate();
+  if(v==="series") renderSeries();
+  if(v==="cleanup") renderCleanup();
 }
 function changed(){
   recompute(); VIEWS.forEach(v=>dirty.add(v));
   const a = document.activeElement; if(a && (a.tagName==="TEXTAREA" || a.type==="range")) { dirty.delete(current); return; }
   if(current==="friend"){ renderFriend(location.hash.slice(8)); return; }
+  if(current==="book"){ const y = window.scrollY; renderBook(decodeURIComponent(location.hash.slice(6))).then(()=>window.scrollTo(0,y)); return; }
   if(current && VIEWS.includes(current)) renderView(current);
 }
 window.addEventListener("hashchange", ()=>show(location.hash.slice(1)));
 function openBook(id){
   const b = book(id); if(!b) return;
+  location.hash = "book=" + encodeURIComponent(id); return;
   if(!b.cat || status(id)){ MB.tab = status(id)||"read"; MB.onlySparse=false; OPEN.add("mb:"+id); dirty.add("mybooks"); if(location.hash!=="#mybooks") location.hash="mybooks"; else renderView("mybooks"); }
   else { BS.q = b.t; Object.assign(BS,{lanes:[],len:"any",pace:"any",talk:"any",pov:"any",era:"any",series:"any",award:false,tags:[],hideShelf:false}); OPEN.add("br:"+id); $("#v-browse").innerHTML=""; dirty.add("browse"); if(location.hash!=="#browse") location.hash="browse"; else renderView("browse"); }
   setTimeout(()=>{ const d=document.querySelector(`[data-key$=":${CSS.escape(id)}"]`); if(d) d.scrollIntoView({block:"start"}); }, 40);
@@ -1091,20 +1351,26 @@ document.addEventListener("click", e=>{
     if(st===null){ setEntry(id,{st:null}); toast("Removed from your shelf."); return; }
     const patch = {st}; const e=S.shelf[id]||{};
     if(st==="read" && !e.fin) patch.fin = today(); if(st==="reading" && !e.start) patch.start = today(); if(st==="dnf" && !e.stop) patch.stop = today();
+    if(st==="read" && e.st==="reading"){ const b = book(id); if(b && b.p){ const cur = e.page ?? Math.round((e.pct||0)*b.p/100); logPages(b.p - cur); patch.page = b.p; patch.pct = 100; } }
     OPEN.add(($(`[data-key$=":${CSS.escape(id)}"]`)||{dataset:{}}).dataset.key);
     setEntry(id, patch); return;
   }
   if(d.olst){ const doc = SH.ol && SH.ol[+d.oli]; if(doc) addFromOL(doc, d.olst); return; }
+  if(d.star!==undefined && d.sid){ const cur = (S.shelf[d.sid]||{})[d.skind]||0, i = +d.star; const v = i===0 ? null : cur===i ? i-0.5 : cur===i-0.5 ? i : i; setEntry(d.sid, {[d.skind]: v||null}); return; }
   if(d.fmt && d.id){ const cur = (S.shelf[d.id]||{}).fmt; setEntry(d.id, {fmt: cur===d.fmt ? null : d.fmt}); return; }
+  if(d.addp && d.id){ const b = book(d.id), e = S.shelf[d.id]||{}; if(b && b.p){ const cur = e.page ?? Math.round((e.pct||0)*b.p/100); setPage(d.id, cur + (+d.addp)); toast(`On page ${Math.min(b.p, cur + (+d.addp))} of ${b.p}.`); } return; }
   if(d.qd){ const b=book(d.id); let v=d.v; if(d.qd==="pace"||d.qd==="talk") v=+v; b[d.qd]=v; save(); changed(); return; }
   if(d.qtag){ const b=book(d.id); toggleIn(b.tags, d.qtag, 5); save(); changed(); return; }
   // discover
   if(d.preset){ applyPreset(d.preset); renderDiscoverControls(); renderDiscoverResults(); return; }
   if(d.fmode){ FS.mode=d.fmode; FS.preset=""; if(d.fmode==="like" && !FS.like){ const r=readBooks()[0]; if(r) FS.like=r.id; } renderDiscoverControls(); renderDiscoverResults(); return; }
   if(d.flane){ const s=fLanes().slice(); toggleIn(s,d.flane); FS.lanes=s; FS.preset=""; t.setAttribute("aria-pressed", s.includes(d.flane)); renderDiscoverResults(); return; }
-  if(d.fmust){ toggleIn(FS.must,d.fmust); FS.preset=""; t.setAttribute("aria-pressed", FS.must.includes(d.fmust)); renderDiscoverResults(); return; }
+  if(d.fmust){ toggleIn(FS.must,d.fmust); FS.preset=""; FS.any=[]; FS.not=[]; t.setAttribute("aria-pressed", FS.must.includes(d.fmust)); renderDiscoverResults(); return; }
   // my books
   if(d.qr && d.id){ if(d.qr==="skip"){ S.rateSkip.push(d.id); save(); renderRate(); } else { setEntry(d.id, {st:"read", r:+d.qr}); } return; }
+  if(d.grid!==undefined){ UI.grid = d.grid==="1"; saveUI(); if(current==="mybooks") renderMyBooks(); if(current==="browse") renderBrowseResults(); return; }
+  if(d.act==="sugyes" && d.c){ const tid = S.suggest[d.c]; if(tid){ mergeInto(d.c, tid); save(); changed(); toast("Matched."); } return; }
+  if(d.act==="sugno" && d.c){ delete S.suggest[d.c]; save(); renderCleanup(); return; }
   if(d.year){ YEAR = +d.year; renderYear(); return; }
   if(d.mbtab){ MB.tab=d.mbtab; MB.onlySparse=false; renderMyBooks(); return; }
   // browse
@@ -1114,15 +1380,26 @@ document.addEventListener("click", e=>{
   if(d.plane){ toggleIn(S.profile.lanes,d.plane); save(); changed(); return; }
   if(d.phook){ toggleIn(S.profile.hooks,d.phook,4); save(); changed(); return; }
   if(d.plen!==undefined){ S.profile.length = d.plen==="null"?null:d.plen; save(); changed(); return; }
+  if(d.theme){ S.profile.theme = d.theme; save(); applyTheme(); $$("button[data-theme]").forEach(x=>x.setAttribute("aria-pressed", x.dataset.theme===d.theme)); return; }
   if(d.covers){ S.profile.covers = d.covers==="off" ? "off" : "on"; save(); VIEWS.forEach(v=>dirty.add(v)); renderProfile(); return; }
   if(d.pser){ S.profile.series=d.pser; save(); changed(); return; }
   const act = d.act; if(!act) return;
   if(t.tagName==="A") e.preventDefault();
   const id = d.id;
+  if(act==="search"){ openSearch(); return; }
+  if(act==="more"){ openMore(); return; }
+  if(act==="closesearch"){ closeSearch(); if(t.tagName==="A") location.hash = t.getAttribute("href").slice(1); return; }
+  if(act==="author"){ closeSearch(); Object.assign(BS,{q:d.a,lanes:[],len:"any",pace:"any",talk:"any",pov:"any",era:"any",series:"any",award:false,tags:[],hideShelf:false,sort:"yearA",limit:60}); $("#v-browse").innerHTML=""; dirty.add("browse"); if(location.hash!=="#browse") location.hash="browse"; else renderView("browse"); return; }
+  if(act==="theme"){ closeSearch(); Object.assign(BS,{q:"",lanes:[],len:"any",pace:"any",talk:"any",pov:"any",era:"any",series:"any",award:false,tags:[d.t],hideShelf:false,sort:"fit",limit:60}); $("#v-browse").innerHTML=""; dirty.add("browse"); if(location.hash!=="#browse") location.hash="browse"; else renderView("browse"); return; }
+  if(act==="seriespage"){ closeSearch(); SERP.focus = d.n; dirty.add("series"); if(location.hash!=="#series") location.hash="series"; else renderView("series"); return; }
+  if(act==="back"){ if(history.length>1) history.back(); else location.hash="home"; return; }
+  if(act==="sharebook"){ const url = `${location.origin}${location.pathname}#book=${encodeURIComponent(d.id)}`, b = book(d.id);
+    if(navigator.share) navigator.share({title:b.t, text:`${b.t} by ${b.a}`, url}).catch(()=>{}); else (navigator.clipboard?navigator.clipboard.writeText(url):Promise.reject()).then(()=>toast("Link copied.")).catch(()=>toast(url));
+    return; }
   if(act==="addbook") openSheet();
   if(act==="closesheet") closeSheet();
   if(act==="olsearch") olSearch();
-  if(act==="open") openBook(id);
+  if(act==="open"){ if(!$("#search").hidden) closeSearch(); if(!$("#sheet").hidden) closeSheet(); openBook(id); }
   if(act==="next"){ S.next = S.next===id ? null : id; save(); changed(); }
   if(act==="like"){ FS.mode="like"; FS.like=id; FS.lanes=[...LANES]; FS.preset=""; FS.must=[]; FS.hooksMin=0; FS.len="any"; FS.pace="any"; FS.series="any"; FS.award=false; $("#v-discover").innerHTML=""; dirty.add("discover"); location.hash="discover"; if(current==="discover") renderView("discover"); }
   if(act==="surprise"){ const l=findResults().slice(0,10); if(l.length) openBook(l[Math.floor(Math.random()*l.length)].b.id); }
@@ -1171,12 +1448,13 @@ document.addEventListener("change", async e=>{
   if(t.dataset.rate){ const v = t.value ? +t.value : null; setEntry(t.dataset.rate, {r:v}); return; }
   if(t.dataset.date){ setEntry(t.dataset.id, {[t.dataset.date]: t.value||null}); return; }
   if(t.dataset.note!==undefined){ const v=t.value.trim(); if(v!==(S.shelf[t.dataset.note]||{}).note) setEntry(t.dataset.note, {note:v}); return; }
-  if(t.dataset.pct){ setEntry(t.dataset.pct, {pct:+t.value}); return; }
+  if(t.dataset.pct){ const id = t.dataset.pct, b = book(id), pct = +t.value; if(b && b.p) setPage(id, Math.round(pct*b.p/100)); else setEntry(id, {pct}); return; }
+  if(t.dataset.page){ setPage(t.dataset.page, +t.value); return; }
   if(t.dataset.fav){ toggleIn(S.profile.favorites, t.dataset.fav); save(); changed(); return; }
   if(t.dataset.grfile && t.files[0]){
     const msgs = $$("[data-grmsg]"); msgs.forEach(m=>m.textContent="Reading the file…");
     try{ const res = importGoodreads(await t.files[0].text());
-      const txt = !res ? "That file doesn't look like a Goodreads export. It needs Title, Author, My Rating and Exclusive Shelf columns." : `Imported ${res.n} books: ${res.matched} matched the catalog and ${res.added} ${res.added===1?"was":"were"} added from Goodreads. ${res.added?"Add quick details to the ones you've read, or look up their genres from Profile.":""}`;
+      const txt = !res ? "That file doesn't look like a Goodreads export. It needs Title, Author, My Rating and Exclusive Shelf columns." : `Imported ${res.n} books: ${res.matched} matched the catalog and ${res.added} ${res.added===1?"was":"were"} added from Goodreads. ${res.added?"Add quick details to the ones you've read, or look up their genres from Profile.":""}${res.suggested?` ${res.suggested} look like catalog books under a slightly different title: check them on the Clean up page (More → Clean up my data).`:""}`;
       GRMSG = txt; $$("[data-grmsg]").forEach(m=>m.textContent=txt); if(current==="onboard") renderOnboard();
     }catch(err){ $$("[data-grmsg]").forEach(m=>m.textContent="Couldn't read that file. Export it again from Goodreads and retry."); }
     return;
@@ -1200,11 +1478,17 @@ document.addEventListener("input", e=>{
   const t=e.target;
   if(t.id==="b-q"){ BS.q=t.value; BS.limit=60; clearTimeout(qT); qT=setTimeout(renderBrowseResults,120); }
   if(t.id==="ob-q"){ OB.q=t.value; clearTimeout(qT); qT=setTimeout(renderObResults,100); }
+  if(t.id==="s-q"){ SR.q=t.value; SR.sel=0; clearTimeout(qT); qT=setTimeout(renderSearchResults,80); }
   if(t.id==="sh-q"){ SH.q=t.value; clearTimeout(qT); qT=setTimeout(renderSheetResults,100); }
   if(t.dataset.pct){ const s=$("#pv-"+CSS.escape(t.dataset.pct)); if(s) s.textContent=t.value; }
 });
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#sheet").hidden) closeSheet(); if(e.key==="Enter" && e.target.id==="sh-q") olSearch(); });
+document.addEventListener("keydown", e=>{
+  if(e.key==="/" && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement||{}).tagName||"") && $("#search").hidden && S.profile.onboarded && $("#wrapped").hidden){ e.preventDefault(); openSearch(); return; }
+  if(!$("#search").hidden){ if(e.key==="Escape"){ closeSearch(); return; } if(e.key==="Enter" && e.target.id==="s-q"){ const b = $("#s-res button"); if(b) b.click(); return; } }
+  if(e.key==="Escape" && !$("#sheet").hidden) closeSheet(); if(e.key==="Enter" && e.target.id==="sh-q") olSearch(); });
 $("#sheet").addEventListener("click", e=>{ if(e.target.id==="sheet") closeSheet(); });
+$("#search").addEventListener("click", e=>{ if(e.target.id==="search") closeSearch(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", applyTheme);
 
 function downloadBackup(){
   const blob = new Blob([JSON.stringify(S,null,1)], {type:"application/json"});
@@ -1372,6 +1656,11 @@ let rz; window.addEventListener("resize", ()=>{ clearTimeout(rz); rz=setTimeout(
 
 /* When the catalog gains a book someone had added by hand (or from Goodreads), move their entry onto
    the catalog version so it gets full details, a fit score and a cover. Ratings, dates and notes come along. */
+function mergeInto(cid, tid){
+  const e = S.shelf[cid]; if(e && !S.shelf[tid]) S.shelf[tid] = e;
+  delete S.shelf[cid]; delete S.custom[cid]; delete S.suggest[cid];
+  S.profile.favorites = S.profile.favorites.map(f=>f===cid?tid:f); if(S.next===cid) S.next = tid;
+}
 function adoptCatalogBooks(){
   let moved = 0;
   for(const [cid, b] of Object.entries(S.custom)){
