@@ -1367,7 +1367,7 @@ document.addEventListener("click", e=>{
   if(d.qd){ const b=book(d.id); let v=d.v; if(d.qd==="pace"||d.qd==="talk") v=+v; b[d.qd]=v; save(); changed(); return; }
   if(d.qtag){ const b=book(d.id); toggleIn(b.tags, d.qtag, 5); save(); changed(); return; }
   // discover
-  if(d.preset){ applyPreset(d.preset); renderDiscoverControls(); renderDiscoverResults(); return; }
+  if(d.preset){ applyPreset(FS.preset===d.preset && d.preset!=="best" ? "best" : d.preset); renderDiscoverControls(); renderDiscoverResults(); return; }
   if(d.fmode){ FS.mode=d.fmode; FS.preset=""; if(d.fmode==="like" && !FS.like){ const r=readBooks()[0]; if(r) FS.like=r.id; } renderDiscoverControls(); renderDiscoverResults(); return; }
   if(d.flane){ const s=fLanes().slice(); toggleIn(s,d.flane); FS.lanes=s; FS.preset=""; t.setAttribute("aria-pressed", s.includes(d.flane)); renderDiscoverResults(); return; }
   if(d.fmust){ toggleIn(FS.must,d.fmust); FS.preset=""; FS.any=[]; FS.not=[]; t.setAttribute("aria-pressed", FS.must.includes(d.fmust)); renderDiscoverResults(); return; }
