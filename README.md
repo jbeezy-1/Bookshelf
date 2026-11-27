@@ -3,6 +3,8 @@
 A free reading tracker with personal book recommendations.
 
 - Track what you've read, what you're reading, what you want to read and what you didn't finish (with where you stopped).
+- Book covers from Open Library, with a generated cover when there isn't one. Covers can be turned off in Profile.
+- Track the format you read in (print, ebook, audiobook); Goodreads imports bring it over.
 - A yearly reading goal on Home and a "Your year in books" recap page.
 - "Next in your series" on Home picks up every series you've started.
 - Share your shelf with a friend by link: they see your favorites they haven't read and a taste match score.
@@ -14,7 +16,7 @@ A free reading tracker with personal book recommendations.
 
 ## Privacy
 
-Everything you enter is saved in your own browser on your own device. Nothing is sent to a server, and nobody else can see your shelf. The only outside request is a search on Open Library (openlibrary.org) when you look up a book that isn't in the catalog. Use **Profile → Send to another device** or **Download backup** to move your shelf. Share and device links carry their data after the `#` in the link, which browsers never send to a server.
+Everything you enter is saved in your own browser on your own device. Nothing is sent to a server, and nobody else can see your shelf. The only outside requests go to Open Library (openlibrary.org): cover images, which send just a book's title and author and can be turned off in Profile, and searches when you look up a book that isn't in the catalog. Use **Profile → Send to another device** or **Download backup** to move your shelf. Share and device links carry their data after the `#` in the link, which browsers never send to a server.
 
 ## Files
 
@@ -22,6 +24,7 @@ Everything you enter is saved in your own browser on your own device. Nothing is
 - `app.js` — the app
 - `model.js` — themes, genres and the recommendation model
 - `catalog.js` — the book catalog (generated; one row per book)
+- `catalog-tags.js` — extra themes for books in `catalog.js` (every book now has at least four)
 - `catalog-new.js` — books added by hand on top of the generated catalog (recent releases and missing series entries)
 - `sw.js`, `manifest.webmanifest`, `icon-*.png` — offline support and home-screen install
 

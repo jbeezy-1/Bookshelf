@@ -109,6 +109,11 @@ section[data-view]{display:grid;gap:1.6rem}
 .pill.series{background:transparent;border:1px solid var(--accent);color:var(--accent)}
 .score.fit.dnf{background:conic-gradient(var(--gold) calc(var(--v)*1%), var(--track) 0)}
 .notice .btn{margin-top:.3rem}
+.cover{position:relative;display:block;width:2.5rem;height:3.7rem;border-radius:2px 3px 3px 2px;overflow:hidden;background:linear-gradient(90deg,rgba(0,0,0,.18) 0 3px,transparent 3px),hsl(var(--h) 28% var(--l));box-shadow:0 1px 2px rgba(0,0,0,.25);flex:none}
+.cover .ct{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--display);font-size:1.35rem;color:hsla(0,0%,100%,.82)}
+.cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:var(--panel)}
+.cover.big{width:4.2rem;height:6.2rem}
+.cover.big .ct{font-size:2.2rem}
 .pill.sparse{background:transparent;border:1px dashed var(--muted);color:var(--muted)}
 
 .controls{display:grid;gap:.9rem}
@@ -127,7 +132,7 @@ input[type="range"]{width:100%;accent-color:var(--accent)}
 
 .books{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
 .bk{border-bottom:1px solid var(--rule)}
-.bk > summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:3.1rem 1fr auto;gap:.2rem .9rem;align-items:center;padding:.7rem .2rem}
+.bk > summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:3.1rem 2.5rem 1fr auto;gap:.2rem .9rem;align-items:center;padding:.7rem .2rem}
 .bk > summary::-webkit-details-marker{display:none}
 .bk > summary:hover .bt{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
 .score{width:3.1rem;height:3.1rem;border-radius:50%;display:grid;place-items:center;text-align:center;line-height:1;font-variant-numeric:tabular-nums}
@@ -232,6 +237,7 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 <noscript><p class="wrap">Bookshelf needs JavaScript turned on.</p></noscript>
 <script src="catalog.js"></script>
 <script src="catalog-new.js"></script>
+<script src="catalog-tags.js"></script>
 <script src="model.js"></script>
 <script src="app.js"></script>
 <script>

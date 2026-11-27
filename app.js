@@ -27,6 +27,7 @@ const CATIDX = {}; CAT.forEach(b=>{ CATIDX[normT(b.t)+"|"+lastName(b.a)] = b; (C
 const KEY = "bookshelf-v1";
 const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}});
 const STATUSES = ["read","reading","want","passed","dnf"];
+const FORMATS = {print:"Print", ebook:"Ebook", audio:"Audiobook"};
 let S = (()=>{ try{ const s = JSON.parse(localStorage.getItem(KEY)); if(s && s.v===1) return Object.assign(blank(), s); }catch(e){} return blank(); })();
 
 /* Anything that arrives from a file or a link is cleaned before use, so a bad or hostile file can't break the page. */
@@ -45,6 +46,7 @@ function cleanEntry(e){
   if(r) out.r = Math.round(r*2)/2; if(dr) out.dr = Math.round(dr*2)/2; if(pct!==null) out.pct = Math.round(pct);
   ["start","fin","stop"].forEach(k=>{ const d=isDate(e[k]); if(d) out[k]=d; });
   if(e.note) out.note = str(e.note, 4000);
+  if(FORMATS[e.fmt]) out.fmt = e.fmt;
   return out.st ? out : null;
 }
 function cleanState(j){
@@ -52,7 +54,7 @@ function cleanState(j){
   const s = blank(), P = j.profile||{};
   s.profile = {name:str(P.name,60), lanes:(Array.isArray(P.lanes)?P.lanes:[]).filter(l=>LANES.includes(l)), hooks:(Array.isArray(P.hooks)?P.hooks:[]).filter(h=>TAGS[h]).slice(0,4),
     favorites:(Array.isArray(P.favorites)?P.favorites:[]).map(String).slice(0,50), length:["short","medium","long"].includes(P.length)?P.length:null,
-    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today(), goals:{}};
+    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today(), goals:{}, covers:P.covers==="off"?"off":"on"};
   for(const [y,n] of Object.entries(P.goals||{})){ const g = numIn(n,1,500); if(/^\d{4}$/.test(y) && g) s.profile.goals[y] = Math.round(g); }
   for(const [k,v] of Object.entries(j.hints||{})){ if(/^[a-z0-9]{1,20}$/.test(k) && isDate(v)) s.hints[k] = v; }
   for(const [id,b] of Object.entries(j.custom||{})) if(b && typeof b==="object" && /^(gr|ol)-[a-z0-9-]+$/.test(id)) s.custom[id] = cleanBook(b, id);
@@ -165,6 +167,7 @@ function statsGrid(b, e){
   if(b.pace) rows.push(["Pace", `${meter(b.pace)}${PACE[b.pace]}`, true]);
   if(b.aw) rows.push(["Awards", b.aw]);
   if(b.gr) rows.push(["Goodreads average", `${b.gr.toFixed(2)}★`]);
+  if(e && e.fmt) rows.push(["Format", FORMATS[e.fmt]]);
   if(e && e.start) rows.push(["Started", dateTxt(e.start)]);
   if(e && e.st==="dnf"){ rows.push(["Stopped at", `${e.pct||0}%${b.p?` · about page ${fmt(b.p*(e.pct||0)/100)}`:""}`]); if(e.stop) rows.push(["Stopped", dateTxt(e.stop)]); if(e.dr) rows.push(["Rating so far", starTxt(e.dr)]); }
   if(e && e.fin && e.st==="read") rows.push(["Finished", dateTxt(e.fin)]);
@@ -206,6 +209,7 @@ function trackBox(b){
     <p class="muted small">Books you didn't finish stay off your recommendations and don't count toward your average or your taste charts. If you pick it back up, tap <b>Reading</b> and your place is kept.</p>`;
   if(s==="read") html += `<div class="track-row">${ratingSelect(b.id, e.r)}<label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label><label class="ctrl"><span class="lbl">Finished</span><input type="date" value="${e.fin||""}" data-date="fin" data-id="${b.id}"></label></div>
     <label class="check"><input type="checkbox" data-fav="${b.id}"${PREFS.favorites.includes(b.id)?" checked":""}> One of my all-time favorites (counts extra in recommendations)</label>`;
+  if(s==="read"||s==="reading"||s==="dnf") html += `<div class="ctrl"><span class="lbl">Format</span><div class="chips">${Object.entries(FORMATS).map(([k,l])=>`<button class="chip" data-fmt="${k}" data-id="${b.id}" aria-pressed="${e.fmt===k}">${l}</button>`).join("")}</div></div>`;
   if(s) html += `<label class="ctrl"><span class="lbl">Notes</span><textarea data-note="${b.id}" placeholder="What you thought">${esc(e.note||"")}</textarea></label>`;
   return `<div class="track-box">${html}</div>`;
 }
@@ -219,6 +223,38 @@ function quickDetails(b){
     ${pick("pov","Narrator",[["f","First person"],["t","Third person"],["o","Mixed or unusual"],["m","Memoir"],["r","Reported nonfiction"]])}
     <div class="ctrl"><span class="lbl">Themes (pick up to 5)</span><div class="chips">${Object.keys(TAGS).map(t=>`<button class="chip" data-qtag="${t}" data-id="${b.id}" aria-pressed="${b.tags.includes(t)}">${esc(TAGS[t])}</button>`).join("")}</div></div></div>`;
 }
+/* Covers: real ones from Open Library when this reader allows it, otherwise (and while loading) a generated title card. */
+const LANE_HUE = {Thriller:200, Mystery:265, "Sci-fi":185, Fantasy:290, Literary:30, Historical:40, Horror:355, Nonfiction:150};
+const hashN = t => { let h=0; for(const c of String(t)) h = (h*31 + c.charCodeAt(0))|0; return Math.abs(h); };
+let COV = (()=>{ try{ return JSON.parse(localStorage.getItem("bookshelf-covers"))||{}; }catch(e){ return {}; } })();
+const coversOn = () => S.profile.covers!=="off";
+function coverEl(b){
+  const hue = (LANE_HUE[b.lane] ?? 160) + (hashN(b.t)%24) - 12, light = 28 + hashN(b.a)%12;
+  const n = COV[b.id], img = coversOn() && n>0 ? `<img src="https://covers.openlibrary.org/b/id/${n}-M.jpg" alt="" loading="lazy" onerror="this.remove()">` : "";
+  return `<span class="cover" data-cid="${esc(b.id)}" style="--h:${hue};--l:${light}%" aria-hidden="true"><span class="ct">${esc(String(b.t).replace(/^(The|A|An) /,"").slice(0,1))}</span>${img}</span>`;
+}
+const COVQ = []; let covBusy = 0, covSaveT;
+const covIO = "IntersectionObserver" in window ? new IntersectionObserver(es=>es.forEach(en=>{ if(en.isIntersecting){ covIO.unobserve(en.target); queueCover(en.target.dataset.cid); } }), {rootMargin:"200px"}) : null;
+function queueCover(id){ if(!coversOn() || id in COV || COVQ.includes(id)) return; COVQ.push(id); pumpCovers(); }
+async function pumpCovers(){
+  while(covBusy<2 && COVQ.length){
+    const id = COVQ.shift(), b = book(id); if(!b || id in COV) continue; covBusy++;
+    (async()=>{
+      try{
+        const r = await fetch(`https://openlibrary.org/search.json?title=${encodeURIComponent(b.t)}&author=${encodeURIComponent(String(b.a).split(/ & | and |,/)[0])}&fields=cover_i&limit=5`);
+        if(r.ok){ const j = await r.json(); const d = (j.docs||[]).find(x=>x.cover_i); COV[id] = d ? d.cover_i : 0; clearTimeout(covSaveT); covSaveT = setTimeout(()=>{ try{ localStorage.setItem("bookshelf-covers", JSON.stringify(COV)); }catch(e){} }, 800);
+          if(d) $$(`.cover[data-cid="${CSS.escape(id)}"]`).forEach(el=>{ if(!el.querySelector("img")) el.insertAdjacentHTML("beforeend", `<img src="https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg" alt="" loading="lazy" onerror="this.remove()">`); }); }
+      }catch(e){}
+      covBusy--; setTimeout(pumpCovers, 250);
+    })();
+  }
+}
+function scanCovers(){
+  if(!coversOn()) return;
+  $$(".cover[data-cid]:not([data-seen])").forEach(el=>{ el.dataset.seen="1"; if(el.dataset.cid in COV) return; covIO ? covIO.observe(el) : queueCover(el.dataset.cid); });
+}
+let scanT; new MutationObserver(()=>{ clearTimeout(scanT); scanT = setTimeout(scanCovers, 60); }).observe(document.querySelector("main"), {childList:true, subtree:true});
+
 function bookCard(b, opt={}){
   const key = (opt.ctx||"x")+":"+b.id, s = status(b.id);
   const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★`:"", opt.note?`<b>${esc(opt.note)}</b>`:""].filter(Boolean).join(" · ");
@@ -231,7 +267,7 @@ function bookCard(b, opt={}){
   }
   body += quickDetails(b) + statsGrid(b, entry(b.id)) + tagList(b);
   if(s==="read"){ const sn = seriesNextAfter(b.id); body += `<div class="actions"><button class="btn ghost" data-act="like" data-id="${b.id}">Find books like this</button>${sn?`<button class="btn ghost" data-act="open" data-id="${sn.b.id}">Next in series: ${esc(sn.b.t)}</button>`:""}</div>`; }
-  return `<li><details class="bk" data-key="${key}"${OPEN.has(key)?" open":""}><summary>${opt.badge || scoreBadge(b)}<span style="min-width:0">${opt.rank?`<span class="rank">#${opt.rank} </span>`:""}<span class="bt">${esc(b.t)}</span><div class="bm">${meta}</div></span><span class="side">${pills(b)}<span class="chev" aria-hidden="true">›</span></span></summary><div class="body">${body}</div></details></li>`;
+  return `<li><details class="bk" data-key="${key}"${OPEN.has(key)?" open":""}><summary>${opt.badge || scoreBadge(b)}${coverEl(b)}<span style="min-width:0">${opt.rank?`<span class="rank">#${opt.rank} </span>`:""}<span class="bt">${esc(b.t)}</span><div class="bm">${meta}</div></span><span class="side">${pills(b)}<span class="chev" aria-hidden="true">›</span></span></summary><div class="body">${body}</div></details></li>`;
 }
 function dotPlot(rows, ref){
   const min=1, max=5, x = v => ((v-min)/(max-min)*100).toFixed(2);
@@ -333,7 +369,7 @@ function renderHome(){
       ${reading.length?reading.map(b=>{ const e=entry(b.id); return `<div class="t">${esc(b.t)}</div><div class="muted small">${esc(b.a)}${b.p?` · ${fmt(Math.round(b.p*(e.pct||0)/100))} of ${fmt(b.p)} pages`:""}</div><div class="progress"><i style="width:${e.pct||0}%"></i></div><div class="actions"><button class="btn ghost" data-act="open" data-id="${b.id}">Update progress</button></div>`; }).join("<hr style='border:0;border-top:1px solid var(--rule);width:100%'>"):`<p class="muted small">Nothing yet. Open any book and tap <b>Reading</b>.</p>`}
     </div>
     <div class="panel feature"><div class="eyebrow">${nx?(nx.auto?(nx.fromList?"Up next · best fit on your list":"Up next · top recommendation"):"Up next · your pick"):"Up next"}</div>
-      ${nx?`<div class="t">${esc(nx.b.t)}</div><div class="muted small">${esc(nx.b.a)}${nx.b.p?` · ${fmt(nx.b.p)} pages · ~${daysFor(nx.b.p)} days`:""}</div>
+      ${nx?`<div style="display:flex;gap:.8rem;align-items:flex-start">${coverEl(nx.b).replace('class="cover"','class="cover big"')}<div style="min-width:0"><div class="t">${esc(nx.b.t)}</div><div class="muted small">${esc(nx.b.a)}${nx.b.p?` · ${fmt(nx.b.p)} pages · ~${daysFor(nx.b.p)} days`:""}</div></div></div>
       <div class="progress" title="Fit ${fit(nx.b.id).fit}"><i style="width:${fit(nx.b.id).fit}%"></i></div>
       <div class="muted small">Fit ${fit(nx.b.id).fit}. ${esc(whyLines(nx.b)[0])}</div>
       <div class="actions"><button class="btn ghost" data-act="open" data-id="${nx.b.id}">See details</button></div>`:`<p class="muted small">Add some books to get a pick.</p>`}
@@ -425,6 +461,8 @@ function renderYear(){
   if(busiest.v>1) facts.push(`Busiest month: <b>${busiest.label}</b>, ${busiest.v} books.`);
   if(topAuth.length) facts.push(`Most-read author${topAuth.length>1?"s":""}: ${topAuth.map(([a,n])=>`<b>${esc(a)}</b> (${n})`).join(", ")}.`);
   if(oldest && newest && oldest!==newest) facts.push(`Oldest book: <b>${esc(oldest.t)}</b> (${oldest.y<0?-oldest.y+" BC":oldest.y}). Newest: <b>${esc(newest.t)}</b> (${newest.y}).`);
+  const fm = {}; books.forEach(b=>{ if(b.fmt) fm[b.fmt]=(fm[b.fmt]||0)+1; });
+  if(Object.keys(fm).length) facts.push(`Formats: ${Object.entries(fm).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<b>${n}</b> ${k==="audio"?(n===1?"audiobook":"audiobooks"):k==="ebook"?(n===1?"ebook":"ebooks"):"in print"}`).join(", ")}.`);
   if(seriesDone) facts.push(`${seriesDone} of your books were part of a series.`);
   if(dnf) facts.push(`You set aside ${dnf} book${dnf===1?"":"s"} without finishing. Life's short.`);
   shift.forEach(x=>facts.push(`${x.d>0?"More":"Less"} <b>${esc(x.l)}</b> than ${y-1} (${x.d>0?"+":""}${x.d}).`));
@@ -512,12 +550,13 @@ function renderDiscoverResults(){
 }
 
 /* ---------- My books ---------- */
-const MB = {tab:"read", sort:"recent", onlySparse:false};
+const MB = {tab:"read", sort:"recent", onlySparse:false, fmt:"any"};
 function renderMyBooks(){
   const groups = {read:[],reading:[],want:[],dnf:[],passed:[]};
   Object.entries(S.shelf).forEach(([id,e])=>{ const b=book(id); if(b && groups[e.st]) groups[e.st].push(b); });
   let list = groups[MB.tab] || [];
   if(MB.onlySparse) list = list.filter(isSparse);
+  if(MB.fmt!=="any") list = list.filter(b=>(S.shelf[b.id]||{}).fmt===MB.fmt);
   const e = id => S.shelf[id] || {};
   const sorts = {recent:(a,b)=>String(e(b.id).fin||e(b.id).stop||e(b.id).at||"").localeCompare(String(e(a.id).fin||e(a.id).at||"")), rating:(a,b)=>(e(b.id).r||0)-(e(a.id).r||0), fit:(a,b)=>fit(b.id).score-fit(a.id).score, title:(a,b)=>a.t.localeCompare(b.t), pages:(a,b)=>(a.p||0)-(b.p||0)};
   list.sort(sorts[MB.sort]||sorts.recent);
@@ -527,7 +566,7 @@ function renderMyBooks(){
   $("#v-mybooks").innerHTML = `
   <div class="block"><div class="eyebrow">My books</div><h2>Your shelf</h2></div>
   <div class="resultbar"><div class="chips">${Object.keys(labels).map(k=>`<button class="chip" data-mbtab="${k}" aria-pressed="${MB.tab===k}">${labels[k]} (${groups[k].length})</button>`).join("")}</div>
-    <div class="actions"><label class="ctrl" style="min-width:11rem"><span class="lbl">Sort</span><select id="mb-sort">${sortOpts.map(([v,l])=>`<option value="${v}"${MB.sort===v?" selected":""}>${l}</option>`).join("")}</select></label><button class="btn" data-act="addbook">Add a book</button></div></div>
+    <div class="actions"><label class="ctrl" style="min-width:11rem"><span class="lbl">Sort</span><select id="mb-sort">${sortOpts.map(([v,l])=>`<option value="${v}"${MB.sort===v?" selected":""}>${l}</option>`).join("")}</select></label><label class="ctrl" style="min-width:9rem"><span class="lbl">Format</span><select id="mb-fmt"><option value="any">Any format</option>${Object.entries(FORMATS).map(([k,l])=>`<option value="${k}"${MB.fmt===k?" selected":""}>${l}</option>`).join("")}</select></label><button class="btn" data-act="addbook">Add a book</button></div></div>
   ${MB.onlySparse?`<p class="notice">Showing books that need quick details. <a href="#mybooks" data-act="allbooks">Show all</a></p>`:""}
   ${list.length?`<ul class="books">${list.map(b=>bookCard(b,{ctx:"mb"})).join("")}</ul>`:`<p class="empty">${MB.tab==="read"?"Books you finish go here. Tap “Add a book” to log ones you've already read.":MB.tab==="want"?"Your to-read list is empty. Add books from Discover or Browse.":MB.tab==="reading"?"Nothing in progress.":MB.tab==="dnf"?"Books you stop partway go here, with where you stopped. Open a book and tap “Didn't finish”.":"Books you pass on go here and stop showing up in recommendations."}</p>`}`;
 }
@@ -631,6 +670,7 @@ function renderTaste(){
     <div class="panel block"><h3>By dialogue</h3>${dotPlot(groupAvg(RATED,b=>b.talk?TALK[b.talk]:null,["Light","Moderate","Heavy"]),ref)}</div>
     <div class="panel block"><h3>By length</h3>${dotPlot(groupAvg(RATED,b=>b.p?LEN_BUCKETS[lenIdx(b.p)][0]:null,LEN_BUCKETS.map(x=>x[0])),ref)}</div>
     <div class="panel block"><h3>By setting era</h3>${dotPlot(groupAvg(RATED,b=>b.era?ERAS[b.era]:null,Object.values(ERAS)),ref)}</div>
+    ${RATED.filter(b=>b.fmt).length>=2?`<div class="panel block"><h3>By format</h3>${dotPlot(groupAvg(RATED,b=>b.fmt?FORMATS[b.fmt]:null,Object.values(FORMATS)),ref)}</div>`:""}
     <div class="panel block"><h3>When they were published</h3>${hbars(Object.keys(dec).sort().map(d=>({label:d,v:dec[d]}))," books")}</div>
   </div>
   ${tagRows.length?`<div class="panel block"><h3>By theme</h3><p class="muted small">Themes in at least two of your rated books. Bold rows are the ones you said hook you.</p>${dotPlot(tagRows,ref)}</div>`:""}
@@ -684,7 +724,9 @@ function renderProfile(){
     </div>
   </div>
   <div class="panel block"><h3>About Bookshelf</h3>
-    <p class="small">Recommendations come from a catalog of ${fmt(CAT.length)} books, each described by hand with its themes, pace, dialogue level, narration, setting and era. Books you add that aren't in the catalog get basic details from Open Library, which you can complete with a few quick taps. Nothing you enter leaves this device. The only outside request is an Open Library search when you look up a book that isn't in the catalog. Page counts are approximate and vary by edition.</p>
+    <div class="ctrl"><span class="lbl">Book covers</span><div class="chips"><button class="chip" data-covers="on" aria-pressed="${coversOn()}">Real covers from Open Library</button><button class="chip" data-covers="off" aria-pressed="${!coversOn()}">Generated covers only</button></div>
+      <p class="muted small">Real covers are looked up on Open Library (openlibrary.org) the first time a book appears, then remembered on this device. Only the book's title and author are sent, never anything about you or your shelf.</p></div>
+    <p class="small">Recommendations come from a catalog of ${fmt(CAT.length)} books, each described by hand with its themes, pace, dialogue level, narration, setting and era. Books you add that aren't in the catalog get basic details from Open Library, which you can complete with a few quick taps. Nothing you enter leaves this device. The only outside requests go to Open Library: cover images (unless you turn them off above) and searches when you look up a book that isn't in the catalog. Page counts are approximate and vary by edition.</p>
     <div class="actions"><button class="btn quiet" data-act="redo">Redo the setup questions</button><button class="btn quiet" data-act="reset" id="reset-btn">Erase everything on this device</button></div>
   </div>`;
 }
@@ -774,6 +816,9 @@ function importGoodreads(text){
     const e = {...(S.shelf[b.id]||{at:today()}), st};
     if(st==="read"){ if(my) e.r = my; if(/^\d{4}-\d{2}-\d{2}$/.test(dr)) e.fin = dr; }
     if(st==="dnf" && my) e.dr = my;
+    const bind = (r[col("Binding")]||"").toLowerCase();
+    if(!e.fmt && bind) e.fmt = /audio|audible|mp3|cd/.test(bind) ? "audio" : /kindle|ebook|e-book|nook|epub|digital/.test(bind) ? "ebook" : /hardcover|paperback|mass market|board|library binding|leather/.test(bind) ? "print" : undefined;
+    if(!e.fmt) delete e.fmt;
     S.shelf[b.id] = e;
   });
   save(); changed();
@@ -866,6 +911,7 @@ document.addEventListener("click", e=>{
     setEntry(id, patch); return;
   }
   if(d.olst){ const doc = SH.ol && SH.ol[+d.oli]; if(doc) addFromOL(doc, d.olst); return; }
+  if(d.fmt && d.id){ const cur = (S.shelf[d.id]||{}).fmt; setEntry(d.id, {fmt: cur===d.fmt ? null : d.fmt}); return; }
   if(d.qd){ const b=book(d.id); let v=d.v; if(d.qd==="pace"||d.qd==="talk") v=+v; b[d.qd]=v; save(); changed(); return; }
   if(d.qtag){ const b=book(d.id); toggleIn(b.tags, d.qtag, 5); save(); changed(); return; }
   // discover
@@ -883,6 +929,7 @@ document.addEventListener("click", e=>{
   if(d.plane){ toggleIn(S.profile.lanes,d.plane); save(); changed(); return; }
   if(d.phook){ toggleIn(S.profile.hooks,d.phook,4); save(); changed(); return; }
   if(d.plen!==undefined){ S.profile.length = d.plen==="null"?null:d.plen; save(); changed(); return; }
+  if(d.covers){ S.profile.covers = d.covers==="off" ? "off" : "on"; save(); VIEWS.forEach(v=>dirty.add(v)); renderProfile(); return; }
   if(d.pser){ S.profile.series=d.pser; save(); changed(); return; }
   const act = d.act; if(!act) return;
   if(t.tagName==="A") e.preventDefault();
@@ -950,6 +997,7 @@ document.addEventListener("change", async e=>{
   if(id==="f-like"){ FS.like=t.value; renderDiscoverResults(); return; }
   if(id==="f-award"){ FS.award=t.checked; renderDiscoverResults(); return; }
   if(id==="mb-sort"){ MB.sort=t.value; renderMyBooks(); return; }
+  if(id==="mb-fmt"){ MB.fmt=t.value; renderMyBooks(); return; }
   const bmap = {"b-sort":"sort","b-len":"len","b-pace":"pace","b-talk":"talk","b-pov":"pov","b-era":"era","b-series":"series"};
   if(bmap[id]){ BS[bmap[id]]=t.value; BS.limit=60; renderBrowseResults(); return; }
   if(id==="b-award"){ BS.award=t.checked; renderBrowseResults(); return; }
