@@ -5,11 +5,12 @@ A free reading tracker with personal book recommendations.
 - Track what you've read, what you're reading, what you want to read and what you didn't finish (with where you stopped).
 - Book covers from Open Library, with a generated cover when there isn't one. Covers can be turned off in Profile.
 - Track the format you read in (print, ebook, audiobook); Goodreads imports bring it over.
-- A yearly reading goal on Home and a "Your year in books" recap page.
+- A yearly reading goal on Home, a "Your year in books" recap page, and a Wrapped-style story of your year with a shareable summary image.
+- Quick-rate: new readers rate well-known books in a minute to get personal recommendations right away.
 - "Next in your series" on Home picks up every series you've started.
 - Share your shelf with a friend by link: they see your favorites they haven't read and a taste match score.
 - Move your shelf to another device with a link, no account needed.
-- Rate books (half stars allowed) and get a fit score (your predicted rating on a 0–100 scale) for every book in a hand-described catalog of about 1,500 titles.
+- Rate books (half stars allowed) and get a fit score (your predicted rating on a 0–100 scale) for every book. Rare shared themes count more than common ones, authors you've rated pull their other books up or down, award winners get a small lift, and after 15 ratings the weights tune themselves to each reader in a hand-described catalog of about 1,500 titles.
 - Import your Goodreads library (My Books → Import and export → Export library).
 - Charts of your reading taste: genres, pace, length, narration, themes and more.
 - Add it to your phone's home screen to use it like an app.

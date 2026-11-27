@@ -21,11 +21,12 @@ const slug = s => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,""
 /* ---------- catalog ---------- */
 const CAT = CATALOG_ROWS.map(([id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags,hook,set,aw])=>({id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags:tags.split(" ").filter(Boolean),hook,set,aw,cat:true}));
 const CATMAP = Object.fromEntries(CAT.map(b=>[b.id,b]));
+setTagWeights(CAT);
 const CATIDX = {}; CAT.forEach(b=>{ CATIDX[normT(b.t)+"|"+lastName(b.a)] = b; (CATIDX[normT(b.t)] ||= b); });
 
 /* ---------- reader state (this browser only) ---------- */
 const KEY = "bookshelf-v1";
-const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}});
+const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}, tuned:null, rateSkip:[]});
 const STATUSES = ["read","reading","want","passed","dnf"];
 const FORMATS = {print:"Print", ebook:"Ebook", audio:"Audiobook"};
 let S = (()=>{ try{ const s = JSON.parse(localStorage.getItem(KEY)); if(s && s.v===1) return Object.assign(blank(), s); }catch(e){} return blank(); })();
@@ -60,7 +61,10 @@ function cleanState(j){
   for(const [id,b] of Object.entries(j.custom||{})) if(b && typeof b==="object" && /^(gr|ol)-[a-z0-9-]+$/.test(id)) s.custom[id] = cleanBook(b, id);
   for(const [id,e] of Object.entries(j.shelf)){ if(!e || typeof e!=="object" || !(CATMAP[id] || s.custom[id])) continue; const c = cleanEntry(e); if(c) s.shelf[id] = c; }
   s.next = typeof j.next==="string" && s.shelf[j.next] ? j.next : null;
+  if(j.tuned && typeof j.tuned==="object"){ const w = j.tuned.weights; const ok = w && typeof w==="object" && Object.keys(MODEL.weights).every(k=>numIn(w[k],0,50)!==null);
+    s.tuned = {n:numIn(j.tuned.n,0,1e5)||0, at:isDate(j.tuned.at)||today(), before:numIn(j.tuned.before,0,5)||0, after:numIn(j.tuned.after,0,5)||0, weights: ok ? Object.fromEntries(Object.keys(MODEL.weights).map(k=>[k,+w[k]])) : null}; }
   s.lastBackup = isDate(j.lastBackup);
+  s.rateSkip = (Array.isArray(j.rateSkip)?j.rateSkip:[]).filter(id=>CATMAP[id]).slice(0,500);
   for(const [k,f] of Object.entries(j.friends||{})) if(f && typeof f.code==="string" && f.code.length<200000) s.friends[str(k,80)] = {name:str(f.name,60), at:isDate(f.at)||today(), code:f.code};
   return s;
 }
@@ -86,6 +90,21 @@ function recompute(){
   PREFS = {lanes:S.profile.lanes||[], hooks:S.profile.hooks||[], favorites:S.profile.favorites||[], length:S.profile.length, series:S.profile.series};
   NEG = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf"||e.st==="passed").map(([id,e])=>{ const b = book(id); return b && {...b, id, st:e.st, r:e.st==="dnf"&&e.dr ? e.dr : MODEL.negRating[e.st], w:MODEL.negWeight[e.st]}; }).filter(Boolean);
   FIT = {}; SN = null;
+  MODEL.active = S.tuned && S.tuned.weights ? S.tuned.weights : null;
+  scheduleTuning();
+}
+// Retune when someone has 15+ ratings and their count has moved by 5 since the last tune.
+let tuneT = null;
+function scheduleTuning(){
+  const n = RATED.length; clearTimeout(tuneT);
+  if(n<15){ if(S.tuned){ S.tuned = null; MODEL.active = null; } return; }
+  if(S.tuned && Math.abs(S.tuned.n - n) < 5) return;
+  tuneT = setTimeout(()=>{
+    const t = tuneWeights(RATED, PREFS, 80);
+    S.tuned = {n: RATED.length, at: today(), before: t.before, after: t.after, weights: t.weights};
+    save(); MODEL.active = t.weights; FIT = {}; VIEWS.forEach(v=>dirty.add(v));
+    if(current && VIEWS.includes(current) && !(document.activeElement && document.activeElement.tagName==="TEXTAREA")) renderView(current);
+  }, 1500);
 }
 function fit(id){ if(!FIT[id]){ const b = book(id); FIT[id] = fitFor(b, RATED, TP, PREFS, NEG); } return FIT[id]; }
 function pagesPerDay(){
@@ -143,6 +162,8 @@ function whyLines(b){
   if(f.hooks.length) out.push(`Has ${f.hooks.length===1?"one":f.hooks.length} of the things you said hook you: ${f.hooks.map(h=>TAGS[h].toLowerCase()).join(", ")}.`);
   const good = f.near.filter(x=>x.score>0.35 && x.r.r>=Math.max(4,(TP.raw||4))).slice(0,2);
   if(good.length) out.push(`Most like ${good.map(x=>`${x.r.t} (${starTxt(x.r.r)})`).join(" and ")}.`);
+  if(f.author) out.push(`You've rated ${f.author.n} books by ${b.a}, averaging ${fmt1(f.author.avg)}★${f.author.adj>=0.05?", so this one gets a boost":f.author.adj<=-0.05?", so this one is marked down a little":""}.`);
+  if(f.acclaim>=0.05 && b.aw) out.push(`Award winner (${b.aw}).`);
   if(f.strong.length){ const t=f.strong[0]; out.push(`Books you've rated with “${TAGS[t]}” average ${fmt1(TP.aff[t].avg)}★.`); }
   const top = f.near[0];
   if(top && top.score>0.45 && top.r.r < (TP.raw||4)-0.4) out.push(`Heads up: it's closest to ${top.r.t}, which you rated ${starTxt(top.r.r)}.`);
@@ -380,10 +401,12 @@ function renderHome(){
       ${read.length?`<p class="small"><a href="#profile" data-act="gofriend">Share your shelf with a friend</a> to compare tastes.</p>`:""}
     </div>
   </div>
+  ${RATED.length<8?`<div class="panel resultbar"><span><b>Make your recommendations personal</b> <span class="muted small">Rate a few well-known books you've read. It takes about a minute.</span></span><a class="btn" href="#rate">Quick-rate books</a></div>`:""}
+  ${(()=>{ const now=new Date(), wy = now.getMonth()>=10 ? now.getFullYear() : now.getMonth()===0 ? now.getFullYear()-1 : null; return wy && finishedIn(wy).length>=3 ? `<div class="panel resultbar wbanner"><span><b>Your ${wy} Wrapped is ready</b> <span class="small">Your year in books, story-style.</span></span><button class="btn big wplay" data-act="wplay" data-y="${wy}">▶ Play</button></div>` : ""; })()}
   ${goalPanel()}
   ${series.length?`<div class="block"><h2>Next in your series</h2><p class="muted small">You've started these. Here's the next one in each that you haven't read.</p>
     <ul class="books">${series.map(x=>bookCard(x.b,{ctx:"ser", note:x.gap?`${x.name} #${x.k}`:`${x.name} #${x.k}, after ${x.after.t}`})).join("")}</ul></div>`:""}
-  ${read.length?`<div class="block"><h2>Your shelf</h2><p class="muted small">Spine width is book length. Darker means a higher rating.</p>
+  ${read.length?`<div class="block"><h2>Your shelf</h2><p class="muted small">Spine width is book length. The bolder the color, the higher your rating.</p>
     <div class="shelf">${shelf.map((b,i)=>`<button class="spine ${rCls(b.r)}" style="flex:${b.p||300} 1 0;height:${80+((i*37)%21)}%" data-act="open" data-id="${b.id}" title="${esc(b.t)}${b.r?", "+starTxt(b.r):""}"><span>${esc(b.t)}</span></button>`).join("")}</div>
     <div class="legend"><span><i class="r5"></i>5 stars</span><span><i class="r4"></i>4 to 4.5</span><span><i class="r3"></i>3 to 3.5</span><span><i class="r2"></i>Under 3</span><span><i class="r0"></i>Not rated</span></div></div>`:""}
   <div class="grid2">
@@ -437,7 +460,7 @@ function renderYear(){
   const books = finishedIn(y), prev = finishedIn(y-1), g = goalFor(y);
   const undated = all.filter(b=>!b.fin).length;
   const chips = years.length>1 ? `<div class="chips">${years.map(v=>`<button class="chip" data-year="${v}" aria-pressed="${v===y}">${v}</button>`).join("")}</div>` : "";
-  const head = `<div class="block"><div class="eyebrow">Year in review</div><h1>Your ${y} in books</h1>${chips}</div>`;
+  const head = `<div class="block"><div class="eyebrow">Year in review</div><h1>Your ${y} in books</h1>${chips}${finishedIn(y).length?`<div class="actions"><button class="btn big wplay" data-act="wplay" data-y="${y}">▶ Play your ${y} Wrapped</button></div>`:""}</div>`;
   if(!books.length){ $("#v-year").innerHTML = head + `<p class="empty">No finished books dated ${y} yet. Books count here once they have a finish date${undated?`. ${undated} of your read books ${undated===1?"doesn't":"don't"} have one: open them in My books to add it`:""}.</p>`; return; }
   const pages = books.reduce((a,b)=>a+(b.p||0),0), rated = books.filter(b=>b.r), avg = rated.length ? rated.reduce((a,b)=>a+b.r,0)/rated.length : null;
   const top = [...rated].sort((a,b)=>b.r-a.r || (b.p||0)-(a.p||0));
@@ -477,7 +500,7 @@ function renderYear(){
     <div class="kpi"><b>${lanes[0]?esc(lanes[0].label):"–"}</b><span>top genre</span></div>
   </div>
   ${g?`<div class="block"><div class="progress"><i style="width:${Math.min(100,Math.round(books.length/g*100))}%"></i></div><p class="muted small">${books.length>=g?`Goal of ${g} reached.`:`${g-books.length} to go to reach your goal of ${g}.`}</p></div>`:""}
-  <div class="block"><h2>Your ${y} shelf</h2><p class="muted small">In the order you finished them. Darker means a higher rating.</p>
+  <div class="block"><h2>Your ${y} shelf</h2><p class="muted small">In the order you finished them. The bolder the color, the higher your rating.</p>
     <div class="shelf">${shelf.map((b,i)=>`<button class="spine ${rCls(b.r)}" style="flex:${b.p||300} 1 0;height:${80+((i*37)%21)}%" data-act="open" data-id="${b.id}" title="${esc(b.t)}${b.r?", "+starTxt(b.r):""}"><span>${esc(b.t)}</span></button>`).join("")}</div></div>
   <div class="grid2">
     <div class="panel block"><h3>Your best of ${y}</h3>${best.length?`<ul class="insights">${best.map(b=>`<li><b>${esc(b.t)}</b> <span class="muted">${esc(b.a)} · ${starTxt(b.r)}</span></li>`).join("")}</ul>`:`<p class="muted small">Rate the books you finished to see your favorites.</p>`}</div>
@@ -486,6 +509,139 @@ function renderYear(){
     <div class="panel block"><h3>By genre</h3>${hbars(lanes," books")}</div>
   </div>
   ${undated?`<p class="muted small">${undated} read book${undated===1?" has":"s have"} no finish date, so ${undated===1?"it isn't":"they aren't"} counted here. Add dates in My books.</p>`:""}`;
+}
+
+
+/* ---------- Wrapped: the year as a tap-through story ---------- */
+const PERSONAS = {
+  spy:["The Handler","You live for dead drops, double agents and quiet men in grey coats."],
+  catmouse:["The Hunter","You read for the chase, and you can't stop until someone gets caught."],
+  twists:["The Skeptic","You never take a narrator at their word, and you love being wrong."],
+  mystery:["The Detective","Give you a body in the library and you're up past midnight."],
+  crime:["The Insider","You know your way around the underworld, at least on the page."],
+  war:["The Veteran","Big battles, hard choices, and the people who live through them."],
+  worldbuild:["The Worldwalker","Maps in the front of the book are a promise you always keep."],
+  epic:["The Long-Hauler","You don't flinch at 800 pages. You get comfortable."],
+  space:["The Navigator","Your reading happens mostly light-years from Earth."],
+  science:["The Problem-Solver","Nothing beats watching someone science their way out of trouble."],
+  ideas:["The Thinker","You read to have your mind rearranged a little."],
+  survival:["The Survivor","Shipwrecks, blizzards, collapse. You'd make it. Probably."],
+  emotional:["The Big Heart","You pick books that are allowed to wreck you."],
+  funny:["The Wit","Life's too short for books that don't make you laugh."],
+  dark:["The Night Owl","You go where the light doesn't, and you like it there."],
+  truestory:["The Realist","Truth is stranger than fiction, and you've got the receipts."],
+  family:["The Saga-Keeper","Generations, secrets, and kitchen tables are your thing."],
+  heist:["The Mastermind","You appreciate a good plan, and a better double-cross."],
+  narrator:["The Listener","A great voice in your ear is all you need."],
+  sports:["The Fan","Box scores, comebacks and the long season."],
+  western:["The Drifter","Wide skies, long rides, hard men."],
+  coming:["The Grower","Stories about becoming someone hit you hardest."],
+  politics:["The Strategist","Thrones, cabinets, coups: you follow the power."],
+  gothic:["The Haunted","Creaky houses and old secrets feel like home."],
+  underdog:["The Believer","You're always rooting for the long shot."],
+};
+const WR = {i:0, slides:[], timer:null, paused:false, y:null, stats:null};
+const pick = (o) => Object.entries(o).sort((a,b)=>b[1]-a[1]);
+function yearStats(y){
+  const books = finishedIn(y).sort((a,b)=>String(a.fin).localeCompare(String(b.fin)));
+  if(!books.length) return null;
+  const prev = finishedIn(y-1), pages = books.reduce((a,b)=>a+(b.p||0),0);
+  const rated = books.filter(b=>b.r), avg = rated.length ? rated.reduce((a,b)=>a+b.r,0)/rated.length : null;
+  const top = [...rated].sort((a,b)=>b.r-a.r || (PREFS.favorites.includes(b.id)?1:0)-(PREFS.favorites.includes(a.id)?1:0) || (b.p||0)-(a.p||0));
+  const lanes = {}, tags = {}, auth = {}, months = Array(12).fill(0);
+  books.forEach(b=>{ if(b.lane) lanes[b.lane]=(lanes[b.lane]||0)+1; (b.tags||[]).forEach(t=>tags[t]=(tags[t]||0)+1); auth[b.a]=(auth[b.a]||0)+1; months[+b.fin.slice(5,7)-1]++; });
+  // persona: theme that's most over-represented compared with the catalog
+  const catShare = {}; CAT.forEach(b=>b.tags.forEach(t=>catShare[t]=(catShare[t]||0)+1));
+  const lift = Object.entries(tags).filter(([t,n])=>PERSONAS[t] && n>=Math.max(2, books.length*0.2)).map(([t,n])=>[t, (n/books.length)/((catShare[t]||1)/CAT.length)]).sort((a,b)=>b[1]-a[1]);
+  const persona = lift.length ? lift[0][0] : (pick(tags)[0]||[])[0];
+  const timed = books.filter(b=>b.start && b.fin && b.p).map(b=>({b, d:Math.max(1,Math.round((new Date(b.fin)-new Date(b.start))/864e5))})).filter(x=>x.d<400);
+  const fastest = [...timed].sort((a,c)=>c.b.p/c.d - a.b.p/a.d)[0] || null;
+  const longest = [...books].filter(b=>b.p).sort((a,b)=>b.p-a.p)[0] || null;
+  const bm = months.indexOf(Math.max(...months));
+  const low = [...rated].sort((a,b)=>a.r-b.r)[0];
+  const dnf = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf" && e.stop && e.stop.startsWith(String(y))).length;
+  const fmts = {}; books.forEach(b=>{ if(b.fmt) fmts[b.fmt]=(fmts[b.fmt]||0)+1; });
+  return {y, books, prev, pages, avg, top, lanes:pick(lanes), tags:pick(tags), auth:pick(auth).filter(([,n])=>n>1), months, bm, persona, fastest, longest, low: low && low.r<=2.5 && rated.length>=5 ? low : null, dnf, fmts, goal:goalFor(y)};
+}
+function wrappedSlides(st){
+  const S2 = [], y = st.y, n = st.books.length, hrs = Math.round(st.pages*1.5/60);
+  const nm = S.profile.name ? esc(S.profile.name) : "";
+  S2.push({bg:"g1", html:`<p class="wk">${nm?nm+", ":""}your</p><h1 class="wbig">${y}<br>in books</h1><p class="ws">Let's look back at what you read.</p><p class="wtap">Tap to continue</p>`});
+  S2.push({bg:"g2", html:`<p class="wk">This year you finished</p><div class="wnum" data-count="${n}">${n}</div><p class="wh">book${n===1?"":"s"}</p>
+    <p class="ws">${st.goal ? (n>=st.goal ? `Your goal was ${st.goal}. You beat it${n>st.goal?` by ${n-st.goal}`:""}.` : `${Math.round(n/st.goal*100)}% of your goal of ${st.goal}.`) : ""} ${st.prev.length ? (n>st.prev.length ? `That's ${n-st.prev.length} more than ${y-1}.` : n<st.prev.length ? `${st.prev.length} in ${y-1}, so a quieter year.` : `Same as ${y-1}. Consistent.`) : ""}</p>`});
+  if(st.pages) S2.push({bg:"g3", html:`<p class="wk">That's</p><div class="wnum" data-count="${st.pages}">${fmt(st.pages)}</div><p class="wh">pages</p>
+    <p class="ws">About ${fmt(hrs)} hours of reading${hrs>=24?`, or ${fmt1(hrs/24)} full days`:""}. Stacked up, roughly ${st.pages*0.1>=100 ? fmt1(st.pages*0.1/100)+" meters" : Math.round(st.pages*0.1)+" centimeters"} of paper.</p>
+    <p class="ws">Or War and Peace ${fmt1(st.pages/1225)} times over.</p>`});
+  if(st.lanes.length) S2.push({bg:"g4", html:`<p class="wk">Your top genre</p><h1 class="wbig">${esc(st.lanes[0][0])}</h1><p class="ws">${Math.round(st.lanes[0][1]/n*100)}% of everything you finished.</p>
+    <ol class="wlist">${st.lanes.slice(0,5).map(([l,c])=>`<li><span>${esc(l)}</span><b>${c}</b></li>`).join("")}</ol>`});
+  if(st.persona && PERSONAS[st.persona]) S2.push({bg:"g5", html:`<p class="wk">Your reading personality</p><h1 class="wbig">${PERSONAS[st.persona][0]}</h1><p class="ws">${PERSONAS[st.persona][1]}</p>
+    <p class="wk" style="margin-top:1.4rem">Your top themes</p><div class="wchips">${st.tags.slice(0,5).map(([t])=>`<span>${esc(TAGS[t]||t)}</span>`).join("")}</div>`});
+  if(st.auth.length) S2.push({bg:"g6", html:`<p class="wk">You couldn't get enough of</p><h1 class="wbig">${esc(st.auth[0][0])}</h1><p class="ws">${st.auth[0][1]} books this year.${st.auth[1]?` Runner-up: ${esc(st.auth[1][0])} (${st.auth[1][1]}).`:""}</p>`});
+  if(st.top.length) { const b = st.top[0]; S2.push({bg:"g7", html:`<p class="wk">Your book of the year</p>${coverEl(b).replace('class="cover"','class="cover wcover"')}<h1 class="wmid">${esc(b.t)}</h1><p class="ws">${esc(b.a)} · ${starTxt(b.r)}</p>`}); }
+  if(st.top.length>=3) S2.push({bg:"g8", html:`<p class="wk">Your top ${Math.min(5,st.top.length)}</p><ol class="wlist big">${st.top.slice(0,5).map((b,i)=>`<li><span><i>${i+1}</i>${esc(b.t)}</span><b>${starTxt(b.r)}</b></li>`).join("")}</ol>`});
+  const mname = new Date(y, st.bm, 1).toLocaleDateString("en-US",{month:"long"});
+  if(st.months[st.bm]>1 || st.fastest || st.longest) S2.push({bg:"g2", html:`<p class="wk">Records</p>
+    ${st.months[st.bm]>1?`<div class="wrec"><b>${mname}</b><span>Your biggest month: ${st.months[st.bm]} books</span></div>`:""}
+    ${st.longest?`<div class="wrec"><b>${fmt(st.longest.p)} pages</b><span>Longest: ${esc(st.longest.t)}</span></div>`:""}
+    ${st.fastest?`<div class="wrec"><b>${fmt(st.fastest.b.p/st.fastest.d)} a day</b><span>Fastest: ${esc(st.fastest.b.t)}, done in ${st.fastest.d} day${st.fastest.d===1?"":"s"}</span></div>`:""}
+    ${st.avg?`<div class="wrec"><b>${fmt1(st.avg)}★</b><span>Your average rating</span></div>`:""}`});
+  if(st.low || st.dnf) S2.push({bg:"g3", html:`<p class="wk">Not every book was a winner</p>${st.low?`<h1 class="wmid">${esc(st.low.t)}</h1><p class="ws">${starTxt(st.low.r)}. We don't have to talk about it.</p>`:""}${st.dnf?`<p class="ws">And you set aside ${st.dnf} book${st.dnf===1?"":"s"} without finishing. Life's short.</p>`:""}`});
+  S2.push({bg:"g9", summary:true, html:summaryCard(st)});
+  return S2;
+}
+function summaryCard(st){
+  const n = st.books.length;
+  return `<div class="wsum"><div class="wsum-h"><span>${esc(S.profile.name||"My")} ${S.profile.name?"·":""} ${st.y} in books</span></div>
+    <div class="wsum-g"><div><b>${n}</b><span>books</span></div><div><b>${fmt(st.pages)}</b><span>pages</span></div><div><b>${st.avg?fmt1(st.avg)+"★":"–"}</b><span>avg rating</span></div><div><b>${st.lanes[0]?esc(st.lanes[0][0]):"–"}</b><span>top genre</span></div></div>
+    ${st.persona&&PERSONAS[st.persona]?`<p class="wsum-p">${PERSONAS[st.persona][0]}</p>`:""}
+    ${st.top.length?`<ol class="wlist">${st.top.slice(0,5).map((b,i)=>`<li><span><i>${i+1}</i>${esc(b.t)}</span><b>${starTxt(b.r)}</b></li>`).join("")}</ol>`:""}
+    </div><div class="actions wact"><button class="btn" data-act="wsave">Save as image</button>${navigator.share?`<button class="btn ghost wghost" data-act="wshare">Share</button>`:""}<button class="btn ghost wghost" data-act="wreplay">Replay</button><button class="btn ghost wghost" data-act="wclose">Close</button></div>`;
+}
+function openWrapped(y){
+  const st = yearStats(y); if(!st){ toast(`No finished books with dates in ${y} yet.`); return; }
+  WR.y = y; WR.stats = st; WR.slides = wrappedSlides(st); WR.i = 0;
+  $("#wrapped").hidden = false; document.body.style.overflow = "hidden"; showSlide();
+}
+function closeWrapped(){ clearTimeout(WR.timer); $("#wrapped").hidden = true; document.body.style.overflow = ""; }
+function showSlide(){
+  clearTimeout(WR.timer);
+  const s = WR.slides[WR.i], el = $("#wrapped");
+  el.className = "wrapped " + s.bg;
+  el.innerHTML = `<div class="wbars">${WR.slides.map((_,i)=>`<i class="${i<WR.i?"done":i===WR.i?"on":""}"><b style="animation-duration:${s.summary?0:7}s"></b></i>`).join("")}</div>
+    <button class="wx" data-act="wclose" aria-label="Close">✕</button>
+    <div class="wslide" role="group" aria-roledescription="slide" aria-label="${WR.i+1} of ${WR.slides.length}">${s.html}</div>
+    ${s.summary?"":`<button class="wnav wprev" data-act="wprev" aria-label="Previous"></button><button class="wnav wnext" data-act="wnext" aria-label="Next"></button>`}`;
+  $$(".wnum[data-count]", el).forEach(numEl=>{ const to = +numEl.dataset.count, t0 = performance.now(), dur = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1100;
+    const step = t => { const k = dur ? Math.min(1,(t-t0)/dur) : 1; numEl.textContent = fmt(to*(1-Math.pow(1-k,3))); if(k<1) requestAnimationFrame(step); }; requestAnimationFrame(step); });
+  if(!s.summary) WR.timer = setTimeout(()=>{ if(!WR.paused) nextSlide(); }, 7000);
+}
+const nextSlide = () => { if(WR.i < WR.slides.length-1){ WR.i++; showSlide(); } };
+const prevSlide = () => { if(WR.i>0){ WR.i--; showSlide(); } };
+document.addEventListener("keydown", e=>{ if($("#wrapped").hidden) return; if(e.key==="ArrowRight"||e.key===" ") { e.preventDefault(); nextSlide(); } if(e.key==="ArrowLeft") prevSlide(); if(e.key==="Escape") closeWrapped(); });
+
+// Draw the summary as a 1080x1920 image for saving or sharing.
+async function wrappedImage(){
+  const st = WR.stats, c = document.createElement("canvas"); c.width = 1080; c.height = 1920; const x = c.getContext("2d");
+  try{ await document.fonts.ready; }catch(e){}
+  const g = x.createLinearGradient(0,0,1080,1920); g.addColorStop(0,"#1F4A3D"); g.addColorStop(0.55,"#244A3F"); g.addColorStop(1,"#9A6C14"); x.fillStyle = g; x.fillRect(0,0,1080,1920);
+  const serif = '"Young Serif", Georgia, serif', sans = 'Figtree, system-ui, sans-serif';
+  x.fillStyle = "#F6F8F4"; x.font = `600 44px ${sans}`; x.fillText(`${S.profile.name?S.profile.name+"'s":"My"} ${st.y} in books`.toUpperCase(), 90, 170);
+  x.font = `140px ${serif}`; x.fillText(`${st.books.length} books`, 90, 360);
+  x.font = `600 54px ${sans}`; x.fillStyle = "#E0EDE6"; x.fillText(`${fmt(st.pages)} pages${st.avg?`  ·  ${fmt1(st.avg)}★ average`:""}`, 90, 450);
+  let yy = 600;
+  if(st.persona && PERSONAS[st.persona]){ x.fillStyle = "#F2C76E"; x.font = `600 40px ${sans}`; x.fillText("READING PERSONALITY", 90, yy); x.fillStyle = "#F6F8F4"; x.font = `84px ${serif}`; x.fillText(PERSONAS[st.persona][0], 90, yy+100); yy += 220; }
+  if(st.lanes[0]){ x.fillStyle = "#F2C76E"; x.font = `600 40px ${sans}`; x.fillText("TOP GENRE", 90, yy); x.fillStyle = "#F6F8F4"; x.font = `84px ${serif}`; x.fillText(st.lanes[0][0], 90, yy+100); yy += 220; }
+  if(st.top.length){ x.fillStyle = "#F2C76E"; x.font = `600 40px ${sans}`; x.fillText(`TOP ${Math.min(5,st.top.length)}`, 90, yy); yy += 40;
+    st.top.slice(0,5).forEach((b,i)=>{ yy += 110; x.fillStyle = "#F6F8F4"; x.font = `64px ${serif}`; x.fillText(String(i+1), 90, yy);
+      let t = b.t; x.font = `600 50px ${sans}`; while(x.measureText(t).width > 700 && t.length>3) t = t.slice(0,-2); if(t!==b.t) t = t.trim()+"…"; x.fillText(t, 180, yy); x.fillStyle = "#E0EDE6"; x.fillText(starTxt(b.r), 900, yy); }); }
+  x.fillStyle = "#C3D6CE"; x.font = `500 36px ${sans}`; x.fillText("Made with Bookshelf", 90, 1830);
+  return new Promise(res=>c.toBlob(res, "image/png"));
+}
+async function saveWrapped(share){
+  const blob = await wrappedImage(); if(!blob){ toast("Couldn't make the image in this browser."); return; }
+  const file = new File([blob], `bookshelf-${WR.y}-wrapped.png`, {type:"image/png"});
+  if(share && navigator.canShare && navigator.canShare({files:[file]})){ navigator.share({files:[file], title:`My ${WR.y} in books`}).catch(()=>{}); return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500); toast("Image saved.");
 }
 
 /* ---------- Discover ---------- */
@@ -674,11 +830,38 @@ function renderTaste(){
     <div class="panel block"><h3>When they were published</h3>${hbars(Object.keys(dec).sort().map(d=>({label:d,v:dec[d]}))," books")}</div>
   </div>
   ${tagRows.length?`<div class="panel block"><h3>By theme</h3><p class="muted small">Themes in at least two of your rated books. Bold rows are the ones you said hook you.</p>${dotPlot(tagRows,ref)}</div>`:""}
+  ${tunedPanel()}
   <div class="panel block"><h3>How fit scores work</h3>
-    <p>For each book, Bookshelf finds the books you've rated that are most like it (genre, themes, narration, pace, dialogue, length and era), averages your ratings of those with the closest counting most, and blends in how you rate each theme. Books with the things you said hook you get a boost, and genres you didn't pick get a small penalty. Your favorites count extra. Books you didn't finish or passed on count a little against books very like them (but never for having lots of dialogue).</p>
+    <p>For each book, Bookshelf finds the books you've rated that are most like it (genre, themes, narration, pace, dialogue, length and era), averages your ratings of those with the closest counting most, and blends in how you rate each theme. Themes count by how rare they are: sharing "Heist or con" says more than sharing "Dark". Authors you've rated twice or more pull their other books toward how you rated them. Award winners get a small lift, mostly while you've rated only a few books. Books with the things you said hook you get a boost, and genres you didn't pick get a small penalty. Your favorites count extra. Once you've rated 15 books, the weights adjust to whatever best predicts your own ratings. Books you didn't finish or passed on count a little against books very like them (but never for having lots of dialogue).</p>
     <p style="margin-top:.6rem">The fit score is just the predicted rating on a 0–100 scale: 40 ≈ 3.5★, 60 ≈ 4★, 80 ≈ 4.5★, 99 ≈ 5★.</p>
     ${loo!==null?`<p class="muted" style="margin-top:.6rem">Tested on your own ratings (hiding each one and predicting it from the rest), it's off by about ${fmt1(loo)}★ on average. It gets sharper with every rating.</p>`:""}</div>`;
   scatter();
+}
+
+function tunedPanel(){
+  if(RATED.length<15) return `<div class="panel block"><h3>Tuned to you</h3><p class="muted small">After 15 ratings, Bookshelf tests which details (themes, genre, pace, dialogue, length, narration, era) best predict your own ratings and reweights them for you. ${15-RATED.length} to go.</p></div>`;
+  const T = S.tuned; if(!T) return `<div class="panel block"><h3>Tuned to you</h3><p class="muted small">Working it out…</p></div>`;
+  const names = {tags:"Shared themes", lane:"Genre", pace:"Pace", talk:"Dialogue level", length:"Length", pov:"Narration", era:"Setting era"};
+  if(!T.weights) return `<div class="panel block"><h3>Tuned to you</h3><p class="small">Tested on your ${T.n} ratings, the standard weights already predict you best, so nothing changed.</p></div>`;
+  const rows = Object.keys(MODEL.weights).map(k=>{ const m = T.weights[k]/MODEL.weights[k]; return {k, m}; }).filter(x=>Math.abs(x.m-1)>0.01);
+  const say = m => m===0 ? "ignored for you" : m<1 ? "counts half as much" : m>=3 ? "counts 3× as much" : "counts twice as much";
+  return `<div class="panel block"><h3>Tuned to you</h3><p class="small">Tested on your ${T.n} ratings (hiding each one and predicting it from the rest), these changes made predictions more accurate: off by ${fmt1(T.after)}★ on average instead of ${fmt1(T.before)}★.</p>
+    <ul class="insights">${rows.map(x=>`<li><b>${names[x.k]}</b> ${say(x.m)}.</li>`).join("")}</ul><p class="muted small">It re-checks every time you rate 5 more books.</p></div>`;
+}
+
+/* ---------- Quick rate ---------- */
+const QUICK = ["the-da-vinci-code--brown","gone-girl--flynn","the-girl-with-the-dragon-tattoo--larsson","the-silence-of-the-lambs--harris","jurassic-park--crichton","the-hunt-for-red-october--clancy","the-bourne-identity--ludlum","killing-floor--child","the-girl-on-the-train--hawkins","the-silent-patient--michaelides","the-firm--grisham","the-day-of-the-jackal--forsyth","the-spy-who-came-in-from-the-cold--carre","slow-horses--herron","i-am-pilgrim--hayes","and-then-there-were-none--christie","murder-on-the-orient-express--christie","the-thursday-murder-club--osman","the-martian--weir","project-hail-mary--weir","dune--herbert","ender-s-game--card","red-rising--brown","nineteen-eighty-four--orwell","the-hitchhiker-s-guide-to-the-galaxy--adams","ready-player-one--cline","dark-matter--crouch","the-three-body-problem--liu","the-handmaid-s-tale--atwood","fahrenheit-451--bradbury","the-hobbit--tolkien","the-fellowship-of-the-ring--tolkien","a-game-of-thrones--martin","the-name-of-the-wind--rothfuss","the-way-of-kings--sanderson","the-lies-of-locke-lamora--lynch","to-kill-a-mockingbird--lee","the-great-gatsby--fitzgerald","the-kite-runner--hosseini","where-the-crawdads-sing--owens","the-road--mccarthy","life-of-pi--martel","the-catcher-in-the-rye--salinger","the-midnight-library--haig","a-man-called-ove--backman","lessons-in-chemistry--garmus","all-the-light-we-cannot-see--doerr","the-nightingale--hannah","lonesome-dove--mcmurtry","the-help--stockett","shogun--clavell","the-shining--king","it--king","the-stand--king","sapiens--harari","unbroken--hillenbrand","into-thin-air--krakauer","educated--westover","the-boys-in-the-boat--brown","moneyball--lewis","born-a-crime--noah","the-devil-in-the-white-city--larson","in-cold-blood--capote","outliers--gladwell","atomic-habits--clear","killers-of-the-flower-moon--grann"].filter(id=>CATMAP[id]);
+function renderRate(){
+  const lanes = S.profile.lanes||[];
+  const left = QUICK.filter(id=>!status(id) && !S.rateSkip.includes(id)).map(book).sort((a,b)=>(lanes.includes(b.lane)?1:0)-(lanes.includes(a.lane)?1:0));
+  const done = QUICK.filter(id=>status(id)==="read" && entry(id).r).length;
+  const btn = (id,v,l) => `<button class="btn ghost" data-qr="${v}" data-id="${id}">${l}</button>`;
+  $("#v-rate").innerHTML = `<div class="block"><div class="eyebrow">Quick start</div><h2>Rate books you've already read</h2>
+    <p class="lede">Well-known books${lanes.length?", your genres first":""}. Tap how you felt, or "Haven't read" to skip. About ten ratings is enough to make your recommendations personal. You have ${RATED.length} rating${RATED.length===1?"":"s"} so far.</p></div>
+    ${RATED.length>=10?`<p class="notice">That's plenty to work with. <a href="#discover">See your recommendations</a>, or keep going.</p>`:""}
+    ${left.length?`<ul class="results">${left.slice(0,15).map(b=>`<li><span style="display:flex;gap:.7rem;align-items:center;min-width:0">${coverEl(b)}<span><b>${esc(b.t)}</b><br><span class="muted small">${esc(b.a)} · ${esc(b.lane)}</span></span></span>
+      <span class="acts">${btn(b.id,5,"Loved it")}${btn(b.id,4,"Liked it")}${btn(b.id,3,"It was OK")}${btn(b.id,2,"Didn't like it")}<button class="btn quiet" data-qr="skip" data-id="${b.id}">Haven't read</button></span></li>`).join("")}</ul>`:`<p class="empty">You've been through the whole quick list${done?` and rated ${done}`:""}. Add more with “Add a book”.</p>`}
+    <div class="actions"><a class="btn" href="#home">Done</a></div>`;
 }
 
 /* ---------- Profile ---------- */
@@ -841,9 +1024,9 @@ async function olFill(){
 }
 
 /* ---------- routing ---------- */
-const VIEWS = ["home","discover","mybooks","browse","taste","profile","year"];
+const VIEWS = ["home","discover","mybooks","browse","taste","profile","year","rate"];
 const dirty = new Set(VIEWS); let current = null;
-const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","year","friend","incoming"];
+const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","year","rate","friend","incoming"];
 function showOnly(v){ ALLVIEWS.forEach(k=>$("#v-"+k).hidden = k!==v); }
 function show(v){
   v = v || "";
@@ -866,6 +1049,7 @@ function renderView(v){
   if(v==="taste") renderTaste();
   if(v==="profile") renderProfile();
   if(v==="year") renderYear();
+  if(v==="rate") renderRate();
 }
 function changed(){
   recompute(); VIEWS.forEach(v=>dirty.add(v));
@@ -890,7 +1074,7 @@ document.addEventListener("click", e=>{
   if(d.ob){
     if(d.ob==="next"){ if(OB.step===0){ const n=$("#ob-name"); if(n) S.profile.name = n.value.trim(); } OB.step++; save(); renderOnboard(); window.scrollTo(0,0); }
     if(d.ob==="back"){ OB.step=Math.max(0,OB.step-1); renderOnboard(); }
-    if(d.ob==="done"){ S.profile.onboarded = true; save(); changed(); const back = OB.returnTo; OB.returnTo = null; if(back){ location.hash = back; } else { location.hash="home"; show("home"); } }
+    if(d.ob==="done"){ S.profile.onboarded = true; save(); changed(); const back = OB.returnTo; OB.returnTo = null; if(back){ location.hash = back; } else if(RATED.length<5){ location.hash="rate"; } else { location.hash="home"; show("home"); } }
     if(d.ob==="restore"){ const i=document.createElement("input"); i.type="file"; i.accept=".json,application/json"; i.onchange=()=>restoreFile(i.files[0]); i.click(); }
     return;
   }
@@ -920,6 +1104,7 @@ document.addEventListener("click", e=>{
   if(d.flane){ const s=fLanes().slice(); toggleIn(s,d.flane); FS.lanes=s; FS.preset=""; t.setAttribute("aria-pressed", s.includes(d.flane)); renderDiscoverResults(); return; }
   if(d.fmust){ toggleIn(FS.must,d.fmust); FS.preset=""; t.setAttribute("aria-pressed", FS.must.includes(d.fmust)); renderDiscoverResults(); return; }
   // my books
+  if(d.qr && d.id){ if(d.qr==="skip"){ S.rateSkip.push(d.id); save(); renderRate(); } else { setEntry(d.id, {st:"read", r:+d.qr}); } return; }
   if(d.year){ YEAR = +d.year; renderYear(); return; }
   if(d.mbtab){ MB.tab=d.mbtab; MB.onlySparse=false; renderMyBooks(); return; }
   // browse
@@ -947,6 +1132,13 @@ document.addEventListener("click", e=>{
   if(act==="showsparse"){ MB.tab="read"; MB.onlySparse=true; dirty.add("mybooks"); location.hash="mybooks"; if(current==="mybooks") renderMyBooks(); }
   if(act==="allbooks"){ MB.onlySparse=false; renderMyBooks(); }
   if(act==="backup") downloadBackup();
+  if(act==="wplay") openWrapped(+d.y);
+  if(act==="wnext") nextSlide();
+  if(act==="wprev") prevSlide();
+  if(act==="wclose") closeWrapped();
+  if(act==="wreplay"){ WR.i = 0; showSlide(); }
+  if(act==="wsave") saveWrapped(false);
+  if(act==="wshare") saveWrapped(true);
   if(act==="goaledit"){ GOALEDIT = true; renderHome(); const i=$("#goal-n"); if(i) i.focus(); }
   if(act==="goalsave"){ const n = Math.round(+($("#goal-n")||{}).value); if(n>=1 && n<=500){ (S.profile.goals ||= {})[new Date().getFullYear()] = n; GOALEDIT = false; save(); changed(); toast(`Goal set: ${n} books.`); } else toast("Pick a number from 1 to 500."); }
   if(act==="goaloff"){ if(S.profile.goals) delete S.profile.goals[new Date().getFullYear()]; GOALEDIT = false; S.hints["goal"+new Date().getFullYear()] = today(); save(); changed(); }

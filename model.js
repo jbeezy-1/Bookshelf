@@ -38,17 +38,31 @@ const MODEL = {
   maxPred: 4.9,
   // Books you didn't finish or passed on act as mild "less like this" examples.
   negWeight: {dnf:0.6, passed:0.3},
-  negRating: {dnf:2, passed:2.5}  // used when there's no "rating so far"
+  negRating: {dnf:2, passed:2.5},  // used when there's no "rating so far"
+  // Authors you've rated at least twice: their other books move toward how you rate them.
+  authorMin: 2, authorPull: 0.4, authorCap: 0.3,
+  // Award winners get a small lift, larger while you've rated only a few books.
+  acclaim: {base:0.03, early:0.1},
+  active: null  // per-reader weights from tuneWeights(), when they beat the defaults
 };
+
+// Rare themes say more than common ones: sharing "heist" means more than sharing "dark".
+let TAG_IDF = {};
+function setTagWeights(books){
+  const df = {}; books.forEach(b=>b.tags.forEach(t=>df[t]=(df[t]||0)+1));
+  const N = books.length; TAG_IDF = {}; for(const t in df) TAG_IDF[t] = Math.log((N+1)/(df[t]+1)) + 0.5;
+}
+const idf = t => TAG_IDF[t] || 2;
 
 // Similarity over the details both books have. Missing details are skipped, not guessed.
 function similarity(c, r, skip){
-  const W = MODEL.weights; let s=0, tot=0;
+  const W = MODEL.active || MODEL.weights; let s=0, tot=0;
   const add = (k, v) => { if(skip===k || v===null || v===undefined || Number.isNaN(v)) return; s += W[k]*v; tot += W[k]; };
   if(c.lane && r.lane) add("lane", c.lane===r.lane ? 1 : 0);
   if(c.tags.length && r.tags.length){
-    const a = new Set(c.tags), b = new Set(r.tags); let inter=0; a.forEach(x=>{ if(b.has(x)) inter++; });
-    add("tags", inter/(a.size+b.size-inter));
+    const a = new Set(c.tags), b = new Set(r.tags); let inter=0, uni=0;
+    a.forEach(x=>{ const w = idf(x); uni += w; if(b.has(x)) inter += w; }); b.forEach(x=>{ if(!a.has(x)) uni += idf(x); });
+    add("tags", uni ? inter/uni : 0);
   }
   const pc = povClass(c), pr = povClass(r); if(pc && pr) add("pov", pc===pr ? 1 : 0);
   if(c.pace && r.pace) add("pace", 1-Math.abs(c.pace-r.pace)/2);
@@ -82,6 +96,17 @@ function fitFor(c, rated, TP, prefs, neg=[]){
   const known = c.tags.filter(t=>TP.aff[t]);
   const tagDev = known.length ? known.reduce((a,t)=>a+TP.aff[t].dev,0)/known.length : 0;
   let pred = mean + MODEL.blend.neighbors*knn + MODEL.blend.tags*tagDev;
+  // Author track record
+  let author = null;
+  const byAuthor = rated.filter(r=>r.a && r.a===c.a && r.id!==c.id);
+  if(byAuthor.length>=MODEL.authorMin){
+    const avg = byAuthor.reduce((a,r)=>a+r.r,0)/byAuthor.length;
+    const adj = Math.max(-MODEL.authorCap, Math.min(MODEL.authorCap, (avg-mean)*MODEL.authorPull));
+    pred += adj; author = {n:byAuthor.length, avg, adj};
+  }
+  // Acclaim
+  const acclaim = c.aw ? MODEL.acclaim.base + MODEL.acclaim.early*MODEL.priorWeight/(rated.length+MODEL.priorWeight) : 0;
+  pred += acclaim;
   const hooks = prefs.hooks.filter(h=>c.tags.includes(h));
   pred += hooks.length*MODEL.hookBoost;
   const offLane = prefs.lanes.length && c.lane && !prefs.lanes.includes(c.lane);
@@ -98,7 +123,37 @@ function fitFor(c, rated, TP, prefs, neg=[]){
   const fit = fitFromStars(score);
   const strong = known.filter(t=>TP.aff[t].n>=2 && TP.aff[t].avg>=Math.max(4.3, (TP.raw||4)+0.2)).sort((a,b)=>TP.aff[b].avg-TP.aff[a].avg);
   const warn = negSims.find(s=>s.score>0.55) || null;
-  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3), warn};
+  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3), warn, author, acclaim};
+}
+
+// Per-reader weights: try scaling each detail up or down and keep what predicts this reader's own
+// ratings best (each rating hidden in turn). Only used if it clearly beats the defaults.
+function looError(rated, prefs, W){
+  const saved = MODEL.active; MODEL.active = W;
+  let e = 0; rated.forEach(r=>{ const o = rated.filter(x=>x!==r); e += Math.abs(fitFor(r, o, tasteProfile(o), prefs).pred - r.r); });
+  MODEL.active = saved; return e/rated.length;
+}
+function tuneWeights(rated, prefs, maxBooks=120){
+  const sample = rated.length>maxBooks ? [...rated].sort((a,b)=>String(b.fin||"").localeCompare(String(a.fin||""))).slice(0,maxBooks) : rated;
+  const base = {...MODEL.weights}, before = looError(sample, prefs, base);
+  let best = {...base}, bestErr = before;
+  // Themes and genre can be dialed up or down but never switched off; the minor details can be ignored.
+  // Each change must earn its keep, more so with fewer ratings, so a handful of books can't swing things.
+  const OPTS = {tags:[0.5,2], lane:[0.5,2], pov:[0,0.5,2], pace:[0,0.5,2], talk:[0,0.5,2], length:[0,0.5,2], era:[0,2]};
+  const need = 0.003 + 0.06/sample.length;
+  for(let pass=0; pass<2; pass++){
+    for(const k of Object.keys(base)){
+      let bk = null;
+      for(const m of OPTS[k]||[0.5,2]){
+        const W = {...best, [k]: base[k]*m};
+        const e = looError(sample, prefs, W);
+        if(e < bestErr - need && (!bk || e < bk.e)) bk = {W, e};
+      }
+      if(bk){ best = bk.W; bestErr = bk.e; }
+    }
+  }
+  const useful = bestErr < before*0.975;
+  return {weights: useful ? best : null, before, after: useful ? bestErr : before, n: sample.length};
 }
 const fitFromStars = s => Math.round(Math.max(0, Math.min(99, (s-2.5)/2.5*100)));
 
