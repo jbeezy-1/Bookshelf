@@ -19,7 +19,8 @@ const lastName = a => String(a||"").split(/,| & | and /)[0].trim().split(/\s+/).
 const slug = s => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,60);
 
 /* ---------- catalog ---------- */
-const CAT = CATALOG_ROWS.map(([id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags,hook,set,aw])=>({id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags:tags.split(" ").filter(Boolean),hook,set,aw,cat:true}));
+const BL = (typeof BLURBS==="object" && BLURBS) || {};
+const CAT = CATALOG_ROWS.map(([id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags,hook,set,aw,desc])=>({id,t,a,lane,sub,p,y,pov,era,talk,pace,series,tags:tags.split(" ").filter(Boolean),hook,set,aw,desc:desc||BL[id]||"",cat:true}));
 const CATMAP = Object.fromEntries(CAT.map(b=>[b.id,b]));
 setTagWeights(CAT);
 const CATIDX = {}; CAT.forEach(b=>{ CATIDX[normT(b.t)+"|"+lastName(b.a)] = b; (CATIDX[normT(b.t)] ||= b); });
@@ -317,7 +318,7 @@ let scanT; new MutationObserver(()=>{ clearTimeout(scanT); scanT = setTimeout(sc
 function bookCard(b, opt={}){
   const key = (opt.ctx||"x")+":"+b.id, s = status(b.id);
   const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★${fit(b.id).conf==="low"?" (best guess)":""}`:"", opt.note?`<b>${esc(opt.note)}</b>`:""].filter(Boolean).join(" · ");
-  let body = b.hook ? `<p>${esc(b.hook)}</p>` : `<p class="muted">From ${b.src==="goodreads"?"your Goodreads import":"Open Library"}. Not in the Bookshelf catalog yet.</p>`;
+  let body = (b.desc||b.hook) ? `<p class="desc">${esc(b.desc||b.hook)}</p>` : `<p class="muted">From ${b.src==="goodreads"?"your Goodreads import":"Open Library"}. Not in the Bookshelf catalog yet.</p>`;
   body += trackBox(b);
   if(!s || s==="want" || s==="passed"){
     const f = fit(b.id);
@@ -815,7 +816,7 @@ function renderMyBooks(){
 const BS = {q:"", lanes:[], len:"any", pace:"any", talk:"any", pov:"any", era:"any", series:"any", award:false, tags:[], sort:"fit", hideShelf:false, limit:60};
 function browseMatches(b){
   const q = BS.q.trim().toLowerCase();
-  if(q){ const hay = [b.t,b.a,b.sub,b.set,b.lane,ERAS[b.era]||"",b.hook,b.series,...b.tags.map(t=>TAGS[t])].join(" ").toLowerCase(); if(!q.split(/\s+/).every(w=>hay.includes(w))) return false; }
+  if(q){ const hay = [b.t,b.a,b.sub,b.set,b.lane,ERAS[b.era]||"",b.hook,b.desc||"",b.series,...b.tags.map(t=>TAGS[t])].join(" ").toLowerCase(); if(!q.split(/\s+/).every(w=>hay.includes(w))) return false; }
   if(BS.lanes.length && !BS.lanes.includes(b.lane)) return false;
   if(!inLen(b.p, BS.len)) return false;
   if(BS.pace!=="any" && String(b.pace)!==BS.pace) return false;
@@ -1025,7 +1026,7 @@ async function renderBook(id){
       ${b.series?`<div class="eyebrow">${sp?`<a href="#series" data-act="seriespage" data-n="${esc(sp.name)}">${esc(b.series)}</a>`:esc(b.series)}</div>`:""}
       <h1>${esc(b.t)}</h1>
       <p class="lede" style="margin-top:0"><a href="#browse" data-act="author" data-a="${esc(b.a)}">${esc(b.a)}</a>${meta?` · ${esc(meta)}`:""}</p>
-      ${b.hook?`<p>${esc(b.hook)}</p>`:""}
+      ${(b.desc||b.hook)?`<p class="desc">${esc(b.desc||b.hook)}</p>`:""}
       <div class="actions">${scoreBadge(b)}<span class="small">${s2==="read"?(e.r?`You rated it ${starTxt(e.r)}.`:"You've read it. Rate it below."):s2==="dnf"?`You stopped at ${e.pct||0}%.`:s2==="reading"?`You're ${e.pct||0}% through.`:RATED.length?`Predicted ${fmt1(f.pred)}★ for you${f.conf==="low"?" (best guess)":f.conf==="high"?" (confident)":""}.`:"Rate a few books and you'll see a prediction here."}</span>
         <button class="btn ghost" data-act="sharebook" data-id="${esc(id)}">Share</button></div>
     </div></div>

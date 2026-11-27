@@ -31,6 +31,7 @@ Everything you enter is saved in your own browser on your own device. Nothing is
 - `model.js` — themes, genres and the recommendation model
 - `catalog.js` — the book catalog (generated; one row per book)
 - `catalog-tags.js` — extra themes for books in `catalog.js` (every book now has at least four)
+- `catalog-blurbs.js` — the longer, spoiler-free 2–3 sentence description for every catalog book, shown on its page and when you expand it in a list (the one-line hook stays in the catalog rows). Books added in the editor can carry their own description instead.
 - `editor.html` — catalog editor for the site owner: fill in a book, download the updated `catalog-new.js`, upload it
 - `catalog-new.js` — books added by hand on top of the generated catalog (recent releases and missing series entries)
 - `sw.js`, `manifest.webmanifest`, `icon-*.png` — offline support and home-screen install

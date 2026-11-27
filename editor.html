@@ -61,6 +61,7 @@ ol{margin:0;padding-left:1.2rem}
       <label>Series <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">e.g. "Slough House #3, ongoing" or "Karla Trilogy #1 of 3". Leave blank for standalones.</span><input id="series" list="serieslist"></label>
       <div><label>Themes (pick 4–5)</label><div class="chips" id="tags"></div></div>
       <label>One-line hook<textarea id="hook" placeholder="What the book is about, in one sentence, no spoilers."></textarea></label>
+      <label>Longer description (optional)<textarea id="desc" rows="4" placeholder="Two or three sentences: the setup, the main characters, the feel. No spoilers. Shown on the book's page."></textarea></label>
       <div class="row">
         <label style="grid-column:span 2">Setting<input id="set" placeholder="Place and time, e.g. Montana, 1912"></label>
         <label style="grid-column:span 2">Major award<input id="aw" placeholder="e.g. Pulitzer Prize (optional)"></label>
@@ -93,6 +94,7 @@ ol{margin:0;padding-left:1.2rem}
 <script src="catalog.js"></script>
 <script src="catalog-new.js"></script>
 <script src="catalog-tags.js"></script>
+<script src="catalog-blurbs.js"></script>
 <script src="model.js"></script>
 <script>
 "use strict";
@@ -112,7 +114,7 @@ $("#tags").addEventListener("click", e=>{ const b = e.target.closest("[data-tag]
 const val = id => $("#"+id).value.trim();
 function row(){
   const t = val("t"), a = val("a");
-  return [slug(t)+"--"+slug(lastName(a)||"x"), t, a, val("lane"), val("sub"), +val("p")||0, +val("y")||0, val("pov"), val("era"), +val("talk"), +val("pace"), val("series"), [...sel].join(" "), val("hook"), val("set"), val("aw")];
+  return [slug(t)+"--"+slug(lastName(a)||"x"), t, a, val("lane"), val("sub"), +val("p")||0, +val("y")||0, val("pov"), val("era"), +val("talk"), +val("pace"), val("series"), [...sel].join(" "), val("hook"), val("set"), val("aw"), ...(val("desc")?[val("desc")]:[])];
 }
 function check(){
   const r = row(), probs = [], t = r[1], a = r[2];
@@ -128,7 +130,7 @@ function check(){
   return !$("#add").disabled;
 }
 $("#form").addEventListener("input", check);
-function clear(){ ["t","a","sub","p","y","series","hook","set","aw"].forEach(id=>$("#"+id).value=""); sel.clear(); document.querySelectorAll("[data-tag]").forEach(b=>b.setAttribute("aria-pressed","false")); check(); }
+function clear(){ ["t","a","sub","p","y","series","hook","desc","set","aw"].forEach(id=>$("#"+id).value=""); sel.clear(); document.querySelectorAll("[data-tag]").forEach(b=>b.setAttribute("aria-pressed","false")); check(); }
 $("#clear").onclick = clear;
 $("#add").onclick = ()=>{ if(!check()) return; BATCH.push(row()); clear(); drawBatch(); };
 const line = r => JSON.stringify(r);
