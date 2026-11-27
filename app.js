@@ -25,8 +25,41 @@ const CATIDX = {}; CAT.forEach(b=>{ CATIDX[normT(b.t)+"|"+lastName(b.a)] = b; (C
 
 /* ---------- reader state (this browser only) ---------- */
 const KEY = "bookshelf-v1";
-const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null});
+const blank = () => ({v:1, profile:{name:"", lanes:[], hooks:[], favorites:[], length:null, series:"mix", onboarded:false, created:today()}, shelf:{}, custom:{}, next:null, lastBackup:null, friends:{}, hints:{}});
+const STATUSES = ["read","reading","want","passed","dnf"];
 let S = (()=>{ try{ const s = JSON.parse(localStorage.getItem(KEY)); if(s && s.v===1) return Object.assign(blank(), s); }catch(e){} return blank(); })();
+
+/* Anything that arrives from a file or a link is cleaned before use, so a bad or hostile file can't break the page. */
+const isDate = d => typeof d==="string" && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+const numIn = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n>=lo && n<=hi ? n : null; };
+const str = (v, max=500) => v==null ? "" : String(v).slice(0, max);
+function cleanBook(b, id){
+  return {id, t:str(b.t,300)||"Untitled", a:str(b.a,200)||"Unknown", lane:LANES.includes(b.lane)?b.lane:null, sub:str(b.sub,80),
+    p:numIn(b.p,1,20000), y:numIn(b.y,-3000,2100), pov:POVS[b.pov]?b.pov:null, era:ERAS[b.era]?b.era:null,
+    talk:numIn(b.talk,1,3), pace:numIn(b.pace,1,3), series:str(b.series,120), tags:(Array.isArray(b.tags)?b.tags:[]).filter(t=>TAGS[t]).slice(0,8),
+    hook:str(b.hook), set:str(b.set,200), aw:str(b.aw,120), cat:false, src:b.src==="goodreads"?"goodreads":"openlibrary", gr:numIn(b.gr,0,5)};
+}
+function cleanEntry(e){
+  const out = {st:STATUSES.includes(e.st)?e.st:null, at:isDate(e.at)||today()};
+  const r = numIn(e.r,0.5,5), dr = numIn(e.dr,0.5,5), pct = numIn(e.pct,0,100);
+  if(r) out.r = Math.round(r*2)/2; if(dr) out.dr = Math.round(dr*2)/2; if(pct!==null) out.pct = Math.round(pct);
+  ["start","fin","stop"].forEach(k=>{ const d=isDate(e[k]); if(d) out[k]=d; });
+  if(e.note) out.note = str(e.note, 4000);
+  return out.st ? out : null;
+}
+function cleanState(j){
+  if(!j || j.v!==1 || typeof j.shelf!=="object" || !j.shelf) return null;
+  const s = blank(), P = j.profile||{};
+  s.profile = {name:str(P.name,60), lanes:(Array.isArray(P.lanes)?P.lanes:[]).filter(l=>LANES.includes(l)), hooks:(Array.isArray(P.hooks)?P.hooks:[]).filter(h=>TAGS[h]).slice(0,4),
+    favorites:(Array.isArray(P.favorites)?P.favorites:[]).map(String).slice(0,50), length:["short","medium","long"].includes(P.length)?P.length:null,
+    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today()};
+  for(const [id,b] of Object.entries(j.custom||{})) if(b && typeof b==="object" && /^(gr|ol)-[a-z0-9-]+$/.test(id)) s.custom[id] = cleanBook(b, id);
+  for(const [id,e] of Object.entries(j.shelf)){ if(!e || typeof e!=="object" || !(CATMAP[id] || s.custom[id])) continue; const c = cleanEntry(e); if(c) s.shelf[id] = c; }
+  s.next = typeof j.next==="string" && s.shelf[j.next] ? j.next : null;
+  s.lastBackup = isDate(j.lastBackup);
+  for(const [k,f] of Object.entries(j.friends||{})) if(f && typeof f.code==="string" && f.code.length<200000) s.friends[str(k,80)] = {name:str(f.name,60), at:isDate(f.at)||today(), code:f.code};
+  return s;
+}
 let storageOK = true;
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); storageOK = true; }catch(e){ storageOK = false; toast("Couldn't save in this browser. Download a backup from Profile so you don't lose changes."); } }
 const book = id => CATMAP[id] || S.custom[id];
@@ -37,7 +70,7 @@ function setEntry(id, patch){
   const next = {...cur, ...patch};
   if(next.st===null){ delete S.shelf[id]; } else S.shelf[id] = next;
   if(S.next===id && next.st!=="want") S.next = null;
-  save(); changed();
+  save(); changed(); if(PERSIST!==true) protect();
 }
 
 /* ---------- derived ---------- */
@@ -47,7 +80,7 @@ function recompute(){
   RATED = readBooks().filter(b=>b.r>0);
   TP = tasteProfile(RATED);
   PREFS = {lanes:S.profile.lanes||[], hooks:S.profile.hooks||[], favorites:S.profile.favorites||[], length:S.profile.length, series:S.profile.series};
-  FIT = {};
+  FIT = {}; SN = null;
 }
 function fit(id){ if(!FIT[id]){ const b = book(id); FIT[id] = fitFor(b, RATED, TP, PREFS); } return FIT[id]; }
 function pagesPerDay(){
@@ -58,6 +91,30 @@ function pagesPerDay(){
   return {ppd:Math.max(5, Math.round(p/d)), basis:`your pace across ${spans.length} dated book${spans.length>1?"s":""}`};
 }
 const daysFor = p => p ? Math.max(1, Math.round(p/pagesPerDay().ppd)) : null;
+
+/* ---------- series ---------- */
+// Catalog series look like "Slough House #3, ongoing" or "Karla Trilogy #1 of 3".
+const parseSeries = s => { const m = /^(.*?)\s+#(\d+)\b/.exec(s||""); return m ? {name:m[1].trim(), k:+m[2]} : null; };
+const SERIES = {}; CAT.forEach(b=>{ const p = parseSeries(b.series); if(p) (SERIES[p.name] ||= []).push({k:p.k, b}); });
+Object.values(SERIES).forEach(l=>l.sort((x,y)=>x.k-y.k));
+// For each series you've finished at least one book of (and didn't dislike), the lowest-numbered entry after the furthest one you've read.
+let SN = null;
+function seriesNext(){
+  if(SN) return SN;
+  const out = [];
+  for(const [name, list] of Object.entries(SERIES)){
+    const done = list.filter(x=>status(x.b.id)==="read");
+    if(!done.length) continue;
+    const rated = done.filter(x=>entry(x.b.id).r), avg = rated.length ? rated.reduce((a,x)=>a+entry(x.b.id).r,0)/rated.length : null;
+    if(avg!==null && avg<3) continue;
+    const maxK = Math.max(...done.map(x=>x.k));
+    const nx = list.find(x=>x.k>maxK && (!status(x.b.id) || status(x.b.id)==="want"));
+    if(nx) out.push({name, b:nx.b, k:nx.k, after:done.find(x=>x.k===maxK).b, avg, gap:nx.k>maxK+1, count:done.length});
+  }
+  return SN = out;
+}
+const nextInSeriesFor = id => seriesNext().find(x=>x.b.id===id);
+const seriesNextAfter = id => { const p = parseSeries((CATMAP[id]||{}).series); return p ? seriesNext().find(x=>x.name===p.name) : null; };
 const hrs = p => p*1.5/60;
 const isSparse = b => !b.cat && (!b.lane || !b.pace || !b.talk || !b.pov || b.tags.length<2);
 function candidates(){ return CAT.filter(b=>{ const s = status(b.id); return !s || s==="want"; }).concat(Object.values(S.custom).filter(b=>status(b.id)==="want")); }
@@ -76,7 +133,8 @@ const OPEN = new Set();
 document.addEventListener("toggle", e=>{ const d=e.target; if(d.classList && d.classList.contains("bk")) d.open ? OPEN.add(d.dataset.key) : OPEN.delete(d.dataset.key); }, true);
 
 function whyLines(b){
-  const f = fit(b.id), out = [];
+  const f = fit(b.id), out = [], sn = nextInSeriesFor(b.id);
+  if(sn) out.push(sn.gap ? `Continues the ${sn.name} series: you've read up to ${sn.after.t}, and this is #${sn.k}.` : `Next in the ${sn.name} series, after ${sn.after.t}${entry(sn.after.id).r?` (${starTxt(entry(sn.after.id).r)})`:""}.`);
   if(f.hooks.length) out.push(`Has ${f.hooks.length===1?"one":f.hooks.length} of the things you said hook you: ${f.hooks.map(h=>TAGS[h].toLowerCase()).join(", ")}.`);
   const good = f.near.filter(x=>x.score>0.35 && x.r.r>=Math.max(4,(TP.raw||4))).slice(0,2);
   if(good.length) out.push(`Most like ${good.map(x=>`${x.r.t} (${starTxt(x.r.r)})`).join(" and ")}.`);
@@ -104,8 +162,9 @@ function statsGrid(b, e){
   if(b.aw) rows.push(["Awards", b.aw]);
   if(b.gr) rows.push(["Goodreads average", `${b.gr.toFixed(2)}★`]);
   if(e && e.start) rows.push(["Started", dateTxt(e.start)]);
-  if(e && e.fin) rows.push(["Finished", dateTxt(e.fin)]);
-  if(e && e.start && e.fin){ const d=Math.max(1,Math.round((new Date(e.fin)-new Date(e.start))/864e5)); rows.push(["Took", `${d} days${b.p?` · ${Math.round(b.p/d)} pages a day`:""}`]); }
+  if(e && e.st==="dnf"){ rows.push(["Stopped at", `${e.pct||0}%${b.p?` · about page ${fmt(b.p*(e.pct||0)/100)}`:""}`]); if(e.stop) rows.push(["Stopped", dateTxt(e.stop)]); if(e.dr) rows.push(["Rating so far", starTxt(e.dr)]); }
+  if(e && e.fin && e.st==="read") rows.push(["Finished", dateTxt(e.fin)]);
+  if(e && e.st==="read" && e.start && e.fin){ const d=Math.max(1,Math.round((new Date(e.fin)-new Date(e.start))/864e5)); rows.push(["Took", `${d} days${b.p?` · ${Math.round(b.p/d)} pages a day`:""}`]); }
   return `<dl class="stats">${rows.map(([k,v,raw])=>`<div><dt>${k}</dt><dd>${raw?v:esc(v)}</dd></div>`).join("")}</dl>`;
 }
 const tagList = b => b.tags.length ? `<div>${b.tags.map(t=>TAGS[t]?`<span class="tag${PREFS.hooks.includes(t)?" hook":""}">${esc(TAGS[t])}</span>`:"").join("")}</div>` : "";
@@ -116,26 +175,31 @@ function pills(b){
   if(s==="reading") out.push(`<span class="pill reading">Reading</span>`);
   if(s==="want") out.push(`<span class="pill want">On your list</span>`);
   if(s==="passed") out.push(`<span class="pill pass">Passed</span>`);
+  if(s==="dnf") out.push(`<span class="pill dnf">Didn't finish · ${(entry(b.id).pct||0)}%</span>`);
+  if((!s || s==="want") && nextInSeriesFor(b.id)) out.push(`<span class="pill series">Next in series</span>`);
   if(isSparse(b)) out.push(`<span class="pill sparse">Needs details</span>`);
   return out.join("");
 }
 function scoreBadge(b){
   const e = entry(b.id);
   if(e && e.st==="read") return `<span class="score ${rCls(e.r)}" title="Your rating"><span><b>${e.r ? (e.r%1?e.r.toFixed(1):e.r) : "–"}</b><small>${e.r?"stars":"unrated"}</small></span></span>`;
+  if(e && e.st==="dnf") return `<span class="score fit dnf" style="--v:${e.pct||0}" title="Where you stopped"><span><b>${e.pct||0}%</b><small>stopped</small></span></span>`;
   if(e && e.st==="reading") return `<span class="score fit" style="--v:${e.pct||0}" title="Progress"><span><b>${e.pct||0}%</b><small>read</small></span></span>`;
   const f = fit(b.id);
   return `<span class="score fit" style="--v:${f.fit}" title="Fit score"><span><b>${f.fit}</b><small>fit</small></span></span>`;
 }
-function ratingSelect(id, r){
+function ratingSelect(id, r, attr="data-rate", label="Your rating"){
   const opts = [["","Rate it"],...[5,4.5,4,3.5,3,2.5,2,1.5,1,0.5].map(v=>[v, `${v}★`])];
-  return `<label class="ctrl"><span class="lbl">Your rating</span><select data-rate="${id}">${opts.map(([v,l])=>`<option value="${v}"${String(r||"")===String(v)?" selected":""}>${l}</option>`).join("")}</select></label>`;
+  return `<label class="ctrl"><span class="lbl">${label}</span><select ${attr}="${id}">${opts.map(([v,l])=>`<option value="${v}"${String(r||"")===String(v)?" selected":""}>${l}</option>`).join("")}</select></label>`;
 }
 function trackBox(b){
   const e = entry(b.id) || {}, s = e.st;
   const btn = (st,label) => `<button class="btn ghost" data-st="${st}" data-id="${b.id}" aria-pressed="${s===st}">${label}</button>`;
-  let html = `<div class="actions">${btn("want","Want to read")}${btn("reading","Reading")}${btn("read","Read it")}${btn("passed","Not for me")}${s?`<button class="btn quiet" data-st="" data-id="${b.id}">Remove</button>`:""}</div>`;
+  let html = `<div class="actions">${btn("want","Want to read")}${btn("reading","Reading")}${btn("read","Read it")}${btn("dnf","Didn't finish")}${btn("passed","Not for me")}${s?`<button class="btn quiet" data-st="" data-id="${b.id}">Remove</button>`:""}</div>`;
   if(s==="want") html += `<div class="actions"><button class="btn ghost" data-act="next" data-id="${b.id}" aria-pressed="${S.next===b.id}">${S.next===b.id?"Up next ✓":"Make it up next"}</button></div>`;
   if(s==="reading") html += `<div class="track-row"><label class="ctrl"><span class="lbl">Progress: <span id="pv-${b.id}">${e.pct||0}</span>%</span><input type="range" min="0" max="100" step="1" value="${e.pct||0}" data-pct="${b.id}" aria-label="Progress percent"></label><label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label></div>`;
+  if(s==="dnf") html += `<div class="track-row"><label class="ctrl"><span class="lbl">Stopped at: <span id="pv-${b.id}">${e.pct||0}</span>%</span><input type="range" min="0" max="100" step="1" value="${e.pct||0}" data-pct="${b.id}" aria-label="Where you stopped, percent"></label>${ratingSelect(b.id, e.dr, "data-drate", "Rating so far (optional)")}<label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label><label class="ctrl"><span class="lbl">Stopped</span><input type="date" value="${e.stop||""}" data-date="stop" data-id="${b.id}"></label></div>
+    <p class="muted small">Books you didn't finish stay off your recommendations and don't count toward your average or your taste charts. If you pick it back up, tap <b>Reading</b> and your place is kept.</p>`;
   if(s==="read") html += `<div class="track-row">${ratingSelect(b.id, e.r)}<label class="ctrl"><span class="lbl">Started</span><input type="date" value="${e.start||""}" data-date="start" data-id="${b.id}"></label><label class="ctrl"><span class="lbl">Finished</span><input type="date" value="${e.fin||""}" data-date="fin" data-id="${b.id}"></label></div>
     <label class="check"><input type="checkbox" data-fav="${b.id}"${PREFS.favorites.includes(b.id)?" checked":""}> One of my all-time favorites (counts extra in recommendations)</label>`;
   if(s) html += `<label class="ctrl"><span class="lbl">Notes</span><textarea data-note="${b.id}" placeholder="What you thought">${esc(e.note||"")}</textarea></label>`;
@@ -153,7 +217,7 @@ function quickDetails(b){
 }
 function bookCard(b, opt={}){
   const key = (opt.ctx||"x")+":"+b.id, s = status(b.id);
-  const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★`:""].filter(Boolean).join(" · ");
+  const meta = [esc(b.a), b.p?`${fmt(b.p)} pages`:"", b.lane?esc(b.lane):"", (!s||s==="want")&&RATED.length?`predicted ${fmt1(fit(b.id).pred)}★`:"", opt.note?`<b>${esc(opt.note)}</b>`:""].filter(Boolean).join(" · ");
   let body = b.hook ? `<p>${esc(b.hook)}</p>` : `<p class="muted">From ${b.src==="goodreads"?"your Goodreads import":"Open Library"}. Not in the Bookshelf catalog yet.</p>`;
   body += trackBox(b);
   if(!s || s==="want" || s==="passed"){
@@ -162,8 +226,8 @@ function bookCard(b, opt={}){
     if(RATED.length) body += `<div class="near"><div class="eyebrow">Closest books you've read</div>${f.near.map(x=>`<div class="nearrow"><span>${esc(x.r.t)} <span class="muted">${starTxt(x.r.r)}</span></span><span class="bar"><i style="width:${Math.round(x.score*100)}%"></i></span><span class="muted small">${Math.round(x.score*100)}%</span></div>`).join("")}</div>`;
   }
   body += quickDetails(b) + statsGrid(b, entry(b.id)) + tagList(b);
-  if(s==="read") body += `<div class="actions"><button class="btn ghost" data-act="like" data-id="${b.id}">Find books like this</button></div>`;
-  return `<li><details class="bk" data-key="${key}"${OPEN.has(key)?" open":""}><summary>${scoreBadge(b)}<span style="min-width:0">${opt.rank?`<span class="rank">#${opt.rank} </span>`:""}<span class="bt">${esc(b.t)}</span><div class="bm">${meta}</div></span><span class="side">${pills(b)}<span class="chev" aria-hidden="true">›</span></span></summary><div class="body">${body}</div></details></li>`;
+  if(s==="read"){ const sn = seriesNextAfter(b.id); body += `<div class="actions"><button class="btn ghost" data-act="like" data-id="${b.id}">Find books like this</button>${sn?`<button class="btn ghost" data-act="open" data-id="${sn.b.id}">Next in series: ${esc(sn.b.t)}</button>`:""}</div>`; }
+  return `<li><details class="bk" data-key="${key}"${OPEN.has(key)?" open":""}><summary>${opt.badge || scoreBadge(b)}<span style="min-width:0">${opt.rank?`<span class="rank">#${opt.rank} </span>`:""}<span class="bt">${esc(b.t)}</span><div class="bm">${meta}</div></span><span class="side">${pills(b)}<span class="chev" aria-hidden="true">›</span></span></summary><div class="body">${body}</div></details></li>`;
 }
 function dotPlot(rows, ref){
   const min=1, max=5, x = v => ((v-min)/(max-min)*100).toFixed(2);
@@ -245,10 +309,12 @@ function renderHome(){
   const top = candidates().filter(b=>status(b.id)!=="want" && (!PREFS.lanes.length||PREFS.lanes.includes(b.lane))).sort((a,c)=>fit(c.id).score-fit(a.id).score).slice(0,5);
   const sparse = Object.values(S.custom).filter(b=>status(b.id)==="read" && isSparse(b)).length;
   const shelf = [...read].sort((a,b)=>(b.r||0)-(a.r||0) || (b.p||0)-(a.p||0)).slice(0,40);
+  const series = seriesNext().sort((a,c)=>(status(c.b.id)==="want")-(status(a.b.id)==="want") || (c.avg||0)-(a.avg||0) || fit(c.b.id).score-fit(a.b.id).score).slice(0,4);
   $("#v-home").innerHTML = `
   <div class="block"><div class="eyebrow">${P.name?esc(P.name)+"'s bookshelf":"Your bookshelf"}</div>
     <h1>${read.length ? `${fmt(pages)} pages. ${read.length} book${read.length===1?"":"s"}.` : "Let's find your next book."}</h1></div>
   ${!storageOK?`<p class="notice">This browser isn't letting Bookshelf save. Download a backup from Profile before closing the page.</p>`:""}
+  ${safetyNotices()}
   ${sparse?`<p class="notice">${sparse} book${sparse>1?"s you've read need":" you've read needs"} quick details to count fully. <a href="#mybooks" data-act="showsparse">Fill them in</a></p>`:""}
   <div class="kpis">
     <div class="kpi"><b>${read.length}</b><span>books read</span></div>
@@ -271,8 +337,11 @@ function renderHome(){
     <div class="panel feature"><div class="eyebrow">Add to your shelf</div>
       <p class="small">Log what you've read, what you're reading and what you want to read. Rating books you've finished is what makes recommendations good.</p>
       <div class="actions"><button class="btn" data-act="addbook">Add a book</button><a class="btn ghost" href="#profile">Import Goodreads</a></div>
+      ${read.length?`<p class="small"><a href="#profile" data-act="gofriend">Share your shelf with a friend</a> to compare tastes.</p>`:""}
     </div>
   </div>
+  ${series.length?`<div class="block"><h2>Next in your series</h2><p class="muted small">You've started these. Here's the next one in each that you haven't read.</p>
+    <ul class="books">${series.map(x=>bookCard(x.b,{ctx:"ser", note:x.gap?`${x.name} #${x.k}`:`${x.name} #${x.k}, after ${x.after.t}`})).join("")}</ul></div>`:""}
   ${read.length?`<div class="block"><h2>Your shelf</h2><p class="muted small">Spine width is book length. Darker means a higher rating.</p>
     <div class="shelf">${shelf.map((b,i)=>`<button class="spine ${rCls(b.r)}" style="flex:${b.p||300} 1 0;height:${80+((i*37)%21)}%" data-act="open" data-id="${b.id}" title="${esc(b.t)}${b.r?", "+starTxt(b.r):""}"><span>${esc(b.t)}</span></button>`).join("")}</div>
     <div class="legend"><span><i class="r5"></i>5 stars</span><span><i class="r4"></i>4 to 4.5</span><span><i class="r3"></i>3 to 3.5</span><span><i class="r2"></i>Under 3</span><span><i class="r0"></i>Not rated</span></div></div>`:""}
@@ -364,14 +433,14 @@ function renderDiscoverResults(){
 /* ---------- My books ---------- */
 const MB = {tab:"read", sort:"recent", onlySparse:false};
 function renderMyBooks(){
-  const groups = {read:[],reading:[],want:[],passed:[]};
+  const groups = {read:[],reading:[],want:[],dnf:[],passed:[]};
   Object.entries(S.shelf).forEach(([id,e])=>{ const b=book(id); if(b && groups[e.st]) groups[e.st].push(b); });
   let list = groups[MB.tab] || [];
   if(MB.onlySparse) list = list.filter(isSparse);
   const e = id => S.shelf[id] || {};
-  const sorts = {recent:(a,b)=>String(e(b.id).fin||e(b.id).at||"").localeCompare(String(e(a.id).fin||e(a.id).at||"")), rating:(a,b)=>(e(b.id).r||0)-(e(a.id).r||0), fit:(a,b)=>fit(b.id).score-fit(a.id).score, title:(a,b)=>a.t.localeCompare(b.t), pages:(a,b)=>(a.p||0)-(b.p||0)};
+  const sorts = {recent:(a,b)=>String(e(b.id).fin||e(b.id).stop||e(b.id).at||"").localeCompare(String(e(a.id).fin||e(a.id).at||"")), rating:(a,b)=>(e(b.id).r||0)-(e(a.id).r||0), fit:(a,b)=>fit(b.id).score-fit(a.id).score, title:(a,b)=>a.t.localeCompare(b.t), pages:(a,b)=>(a.p||0)-(b.p||0)};
   list.sort(sorts[MB.sort]||sorts.recent);
-  const labels = {read:"Read",reading:"Reading",want:"Want to read",passed:"Not for me"};
+  const labels = {read:"Read",reading:"Reading",want:"Want to read",dnf:"Didn't finish",passed:"Not for me"};
   const sortOpts = MB.tab==="read" ? [["recent","Recently finished"],["rating","Your rating"],["title","Title"],["pages","Shortest first"]] : [["recent","Recently added"],["fit","Best fit"],["title","Title"],["pages","Shortest first"]];
   if(!sortOpts.some(o=>o[0]===MB.sort)) MB.sort = sortOpts[0][0];
   $("#v-mybooks").innerHTML = `
@@ -379,7 +448,7 @@ function renderMyBooks(){
   <div class="resultbar"><div class="chips">${Object.keys(labels).map(k=>`<button class="chip" data-mbtab="${k}" aria-pressed="${MB.tab===k}">${labels[k]} (${groups[k].length})</button>`).join("")}</div>
     <div class="actions"><label class="ctrl" style="min-width:11rem"><span class="lbl">Sort</span><select id="mb-sort">${sortOpts.map(([v,l])=>`<option value="${v}"${MB.sort===v?" selected":""}>${l}</option>`).join("")}</select></label><button class="btn" data-act="addbook">Add a book</button></div></div>
   ${MB.onlySparse?`<p class="notice">Showing books that need quick details. <a href="#mybooks" data-act="allbooks">Show all</a></p>`:""}
-  ${list.length?`<ul class="books">${list.map(b=>bookCard(b,{ctx:"mb"})).join("")}</ul>`:`<p class="empty">${MB.tab==="read"?"Books you finish go here. Tap “Add a book” to log ones you've already read.":MB.tab==="want"?"Your to-read list is empty. Add books from Discover or Browse.":MB.tab==="reading"?"Nothing in progress.":"Books you pass on go here and stop showing up in recommendations."}</p>`}`;
+  ${list.length?`<ul class="books">${list.map(b=>bookCard(b,{ctx:"mb"})).join("")}</ul>`:`<p class="empty">${MB.tab==="read"?"Books you finish go here. Tap “Add a book” to log ones you've already read.":MB.tab==="want"?"Your to-read list is empty. Add books from Discover or Browse.":MB.tab==="reading"?"Nothing in progress.":MB.tab==="dnf"?"Books you stop partway go here, with where you stopped. Open a book and tap “Didn't finish”.":"Books you pass on go here and stop showing up in recommendations."}</p>`}`;
 }
 
 /* ---------- Browse ---------- */
@@ -511,10 +580,19 @@ function renderProfile(){
       <p class="muted small" data-grmsg="1">${esc(GRMSG)}</p>
       ${customs.some(b=>!b.lane)?`<button class="btn ghost" data-act="olfill">Look up genres on Open Library for ${customs.filter(b=>!b.lane).length} imported books</button><p class="muted small" id="olfill-msg"></p>`:""}
     </div>
-    <div class="panel block"><h3>Back up and move devices</h3>
-      <p class="small">Your shelf is saved in this browser only. Download a backup now and then, and restore it on another phone or computer.</p>
-      <div class="actions"><button class="btn" data-act="backup">Download backup</button><label class="btn ghost" style="cursor:pointer">Restore backup<input type="file" accept=".json,application/json" data-restore="1" hidden></label></div>
+    <div class="panel block" id="p-backup"><h3>Back up and move devices</h3>
+      <p class="small">Your shelf is saved in this browser only. <b>Send to another device</b> makes a link that carries your whole shelf to your phone or another computer. A backup file does the same and is a good safety net.</p>
+      <p class="muted small">${S.lastBackup?`Last backup or device link: ${dateTxt(S.lastBackup)}.`:"No backup yet."} ${PERSIST===true?"This browser has agreed to keep your shelf permanently.":PERSIST===false?"This browser may clear its saved data if space runs low or you stay away a long time, so keep a backup.":""}</p>
+      ${IOS && !STANDALONE?`<p class="notice small">On iPhone, add Bookshelf to your Home Screen (Share → Add to Home Screen) so Safari doesn't erase it after a week away.</p>`:""}
+      <div class="actions"><button class="btn" data-act="mktransfer">Send to another device</button><button class="btn ghost" data-act="backup">Download backup</button><label class="btn ghost" style="cursor:pointer">Restore backup<input type="file" accept=".json,application/json" data-restore="1" hidden></label>${INSTALL && !STANDALONE?`<button class="btn ghost" data-act="install">Install as an app</button>`:""}</div>
+      ${linkPanel("transfer")}
       <p class="muted small" id="restore-msg"></p>
+    </div>
+    <div class="panel block" id="p-friends"><h3>Friends</h3>
+      <p class="small">Make a link with the books you've read and your ratings, then text it to a friend. They'll see your favorites they haven't read and a taste match score. Your notes, dates and reading list aren't included, and nothing is uploaded anywhere.</p>
+      <div class="actions"><button class="btn" data-act="mkfriend"${readBooks().length?"":" disabled"}>Make my share link</button>${readBooks().length?"":`<span class="muted small">Mark a few books as read first.</span>`}</div>
+      ${linkPanel("friend")}
+      ${Object.keys(S.friends).length?`<div class="block"><span class="lbl eyebrow">Saved on this device</span>${Object.entries(S.friends).map(([k,f])=>`<div class="resultbar"><span><b>${esc(f.name)}</b> <span class="muted small">shared ${dateTxt(f.at)}</span></span><span class="actions"><button class="btn ghost" data-act="fropen" data-k="${esc(k)}">Compare</button><button class="btn quiet" data-act="frdel" data-k="${esc(k)}">Remove</button></span></div>`).join("")}</div>`:`<p class="muted small">When a friend sends you their link, open it and you can save it here to compare again later.</p>`}
     </div>
     <div class="panel block"><h3>Books not in the catalog</h3>
       ${missing.length?`<p class="small">${missing.length} book${missing.length>1?"s on your shelf aren't":" on your shelf isn't"} in the Bookshelf catalog. Copy the list and send it to whoever runs this site so they can be added with full details.</p>
@@ -600,7 +678,7 @@ function importGoodreads(text){
   let matched=0, added=0, n=0;
   rows.slice(1).forEach(r=>{
     const t = r[col("Title")], a = r[col("Author")]; if(!t) return; n++;
-    const shelf = r[col("Exclusive Shelf")], st = shelf==="read"?"read":shelf==="currently-reading"?"reading":shelf==="to-read"?"want":null; if(!st) return;
+    const shelf = r[col("Exclusive Shelf")], st = shelf==="read"?"read":shelf==="currently-reading"?"reading":shelf==="to-read"?"want":/^(dnf|did-not-finish|abandoned|didnt-finish|did-not-finish-dnf)$/i.test(shelf||"")?"dnf":null; if(!st) return;
     let b = CATIDX[normT(t)+"|"+lastName(a)] || null;
     if(b) matched++;
     else {
@@ -612,6 +690,7 @@ function importGoodreads(text){
     if(avg && !b.cat) b.gr = avg;
     const e = {...(S.shelf[b.id]||{at:today()}), st};
     if(st==="read"){ if(my) e.r = my; if(/^\d{4}-\d{2}-\d{2}$/.test(dr)) e.fin = dr; }
+    if(st==="dnf" && my) e.dr = my;
     S.shelf[b.id] = e;
   });
   save(); changed();
@@ -636,11 +715,16 @@ async function olFill(){
 /* ---------- routing ---------- */
 const VIEWS = ["home","discover","mybooks","browse","taste","profile"];
 const dirty = new Set(VIEWS); let current = null;
+const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","friend","incoming"];
+function showOnly(v){ ALLVIEWS.forEach(k=>$("#v-"+k).hidden = k!==v); }
 function show(v){
-  if(!S.profile.onboarded){ current="onboard"; $("#topbar").hidden=true; VIEWS.forEach(k=>$("#v-"+k).hidden=true); $("#v-onboard").hidden=false; renderOnboard(); return; }
-  $("#topbar").hidden=false; $("#v-onboard").hidden=true;
+  v = v || "";
+  if(v.startsWith("transfer=")){ current="incoming"; $("#topbar").hidden=true; showOnly("incoming"); renderIncoming(v.slice(9)); window.scrollTo(0,0); return; }
+  if(v.startsWith("friend=")){ current="friend"; $("#topbar").hidden=!S.profile.onboarded; showOnly("friend"); $$(".tabs a").forEach(a=>a.setAttribute("aria-current","false")); renderFriend(v.slice(7)); window.scrollTo(0,0); return; }
+  if(!S.profile.onboarded){ current="onboard"; $("#topbar").hidden=true; showOnly("onboard"); renderOnboard(); return; }
+  $("#topbar").hidden=false;
   if(!VIEWS.includes(v)) v="home"; current=v;
-  VIEWS.forEach(k=>$("#v-"+k).hidden = k!==v);
+  showOnly(v);
   $$(".tabs a").forEach(a=>a.setAttribute("aria-current", a.dataset.tab===v?"page":"false"));
   if(dirty.has(v)) renderView(v);
   window.scrollTo(0,0);
@@ -657,7 +741,8 @@ function renderView(v){
 function changed(){
   recompute(); VIEWS.forEach(v=>dirty.add(v));
   const a = document.activeElement; if(a && (a.tagName==="TEXTAREA" || a.type==="range")) { dirty.delete(current); return; }
-  if(current && current!=="onboard") renderView(current);
+  if(current==="friend"){ renderFriend(location.hash.slice(8)); return; }
+  if(current && VIEWS.includes(current)) renderView(current);
 }
 window.addEventListener("hashchange", ()=>show(location.hash.slice(1)));
 function openBook(id){
@@ -676,7 +761,7 @@ document.addEventListener("click", e=>{
   if(d.ob){
     if(d.ob==="next"){ if(OB.step===0){ const n=$("#ob-name"); if(n) S.profile.name = n.value.trim(); } OB.step++; save(); renderOnboard(); window.scrollTo(0,0); }
     if(d.ob==="back"){ OB.step=Math.max(0,OB.step-1); renderOnboard(); }
-    if(d.ob==="done"){ S.profile.onboarded = true; save(); changed(); location.hash="home"; show("home"); }
+    if(d.ob==="done"){ S.profile.onboarded = true; save(); changed(); const back = OB.returnTo; OB.returnTo = null; if(back){ location.hash = back; } else { location.hash="home"; show("home"); } }
     if(d.ob==="restore"){ const i=document.createElement("input"); i.type="file"; i.accept=".json,application/json"; i.onchange=()=>restoreFile(i.files[0]); i.click(); }
     return;
   }
@@ -692,7 +777,7 @@ document.addEventListener("click", e=>{
     if(st===status(id) && st) return;
     if(st===null){ setEntry(id,{st:null}); toast("Removed from your shelf."); return; }
     const patch = {st}; const e=S.shelf[id]||{};
-    if(st==="read" && !e.fin) patch.fin = today(); if(st==="reading" && !e.start) patch.start = today();
+    if(st==="read" && !e.fin) patch.fin = today(); if(st==="reading" && !e.start) patch.start = today(); if(st==="dnf" && !e.stop) patch.stop = today();
     OPEN.add(($(`[data-key$=":${CSS.escape(id)}"]`)||{dataset:{}}).dataset.key);
     setEntry(id, patch); return;
   }
@@ -730,6 +815,24 @@ document.addEventListener("click", e=>{
   if(act==="showsparse"){ MB.tab="read"; MB.onlySparse=true; dirty.add("mybooks"); location.hash="mybooks"; if(current==="mybooks") renderMyBooks(); }
   if(act==="allbooks"){ MB.onlySparse=false; renderMyBooks(); }
   if(act==="backup") downloadBackup();
+  if(act==="mktransfer") makeLink("transfer");
+  if(act==="mkfriend") makeLink("friend");
+  if(act==="gotransfer" || act==="gofriend"){ const kind = act==="gotransfer"?"transfer":"friend"; dirty.add("profile"); if(current!=="profile") location.hash="profile"; makeLink(kind); }
+  if(act==="copylink"){ const ta=$("#link-text"); (navigator.clipboard?navigator.clipboard.writeText(LINK.url):Promise.reject()).then(()=>toast("Link copied.")).catch(()=>{ ta.select(); toast("Selected. Copy it with your keyboard or long-press."); }); }
+  if(act==="sharelink"){ navigator.share({title: LINK.kind==="friend" ? `${S.profile.name||"My"} Bookshelf` : "My Bookshelf", text: LINK.kind==="friend" ? "Here's what I've been reading. Open it to compare tastes:" : "My Bookshelf, for my other device:", url: LINK.url}).catch(()=>{}); }
+  if(act==="hint"){ S.hints[d.k] = today(); save(); renderView(current); }
+  if(act==="install" && INSTALL){ INSTALL.prompt(); INSTALL.userChoice.finally(()=>{ INSTALL=null; dirty.add("home"); dirty.add("profile"); renderView(current); }); }
+  if(act==="incancel"){ IN = null; clearHash(); show("home"); }
+  if(act==="inmerge" && IN){ mergeIncoming(); save(); recompute(); VIEWS.forEach(v=>dirty.add(v)); IN = null; clearHash(); show("home"); toast("Merged. Your shelf now includes the other device's books."); }
+  if(act==="inreplace" && IN){
+    if(!t.dataset.armed){ t.dataset.armed="1"; t.textContent="Tap again to replace this shelf"; t.classList.remove("ghost"); return; }
+    S = IN; S.profile.onboarded = true; save(); recompute(); VIEWS.forEach(v=>dirty.add(v)); IN = null; clearHash(); show("home"); toast("Your shelf is here now."); protect();
+  }
+  if(act==="frall" && FR){ FR.all = !FR.all; renderFriend(FR.code); }
+  if(act==="frsave" && FR){ const k = slug(FR.name||"friend")+"-"+FR.date; S.friends[k] = {name:FR.name, at:FR.date||today(), code:FR.code}; save(); dirty.add("profile"); renderFriend(FR.code); toast(`Saved. Find ${FR.name} under Profile → Friends.`); }
+  if(act==="frstart"){ OB.returnTo = location.hash.slice(1); OB.step = 0; clearHash(""); show(""); }
+  if(act==="fropen"){ const f = S.friends[d.k]; if(f) location.hash = "friend="+f.code; }
+  if(act==="frdel"){ delete S.friends[d.k]; save(); renderProfile(); }
   if(act==="olfill") olFill();
   if(act==="copymissing"){ const ta=$("#missing-list"); const txt=ta.value; (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>toast("Copied.")).catch(()=>{ ta.select(); toast("Selected. Copy it with your keyboard or long-press."); }); }
   if(act==="redo"){ S.profile.onboarded=false; OB.step=1; save(); show("onboard"); }
@@ -737,6 +840,7 @@ document.addEventListener("click", e=>{
 });
 document.addEventListener("change", async e=>{
   const t = e.target, id = t.id;
+  if(t.dataset.drate){ setEntry(t.dataset.drate, {dr: t.value ? +t.value : null}); return; }
   if(t.dataset.rate){ const v = t.value ? +t.value : null; setEntry(t.dataset.rate, {r:v}); return; }
   if(t.dataset.date){ setEntry(t.dataset.id, {[t.dataset.date]: t.value||null}); return; }
   if(t.dataset.note!==undefined){ const v=t.value.trim(); if(v!==(S.shelf[t.dataset.note]||{}).note) setEntry(t.dataset.note, {note:v}); return; }
@@ -778,11 +882,159 @@ function downloadBackup(){
   const blob = new Blob([JSON.stringify(S,null,1)], {type:"application/json"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `bookshelf-backup-${today()}.json`;
   document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  S.lastBackup = today(); save(); dirty.add("home"); dirty.add("profile");
   toast("Backup downloaded.");
 }
 async function restoreFile(f){
-  try{ const j = JSON.parse(await f.text()); if(!j || j.v!==1 || !j.shelf) throw 0; S = Object.assign(blank(), j); save(); recompute(); dirty.clear(); VIEWS.forEach(v=>dirty.add(v)); toast("Backup restored."); show(location.hash.slice(1)||"home"); }
+  try{ const j = cleanState(JSON.parse(await f.text())); if(!j) throw 0; S = j; save(); recompute(); dirty.clear(); VIEWS.forEach(v=>dirty.add(v)); toast("Backup restored."); show(location.hash.slice(1)||"home"); }
   catch(e){ const m=$("#restore-msg"); if(m) m.textContent="That file isn't a Bookshelf backup."; toast("That file isn't a Bookshelf backup."); }
+}
+
+/* ---------- links: move devices, share with friends ----------
+   The whole payload rides in the part of the link after #, which browsers never send to any server,
+   so GitHub Pages never sees it. */
+const b64u = bytes => { let s=""; for(let i=0;i<bytes.length;i+=0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); };
+const unb64u = t => { const s = atob(t.replace(/-/g,"+").replace(/_/g,"/")); const b = new Uint8Array(s.length); for(let i=0;i<s.length;i++) b[i]=s.charCodeAt(i); return b; };
+async function pipe(bytes, stream){ return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
+async function packLink(kind, obj){
+  let bytes = new TextEncoder().encode(JSON.stringify(obj)), tag = "j";
+  if(typeof CompressionStream==="function"){ try{ bytes = await pipe(bytes, new CompressionStream("deflate-raw")); tag = "z"; }catch(e){} }
+  return `${location.origin}${location.pathname}#${kind}=${tag}${b64u(bytes)}`;
+}
+async function unpack(code){
+  const tag = code[0], bytes = unb64u(code.slice(1));
+  if(tag==="z"){ if(typeof DecompressionStream!=="function") throw new Error("old"); return JSON.parse(new TextDecoder().decode(await pipe(bytes, new DecompressionStream("deflate-raw")))); }
+  if(tag==="j") return JSON.parse(new TextDecoder().decode(bytes));
+  throw new Error("bad");
+}
+const linkErr = e => e && e.message==="old" ? "This browser is too old to open Bookshelf links. Try the latest Safari or Chrome." : "That link looks incomplete or damaged. Ask for it to be sent again, and copy the whole thing.";
+function clearHash(to="home"){ history.replaceState(null, "", location.pathname + (to?"#"+to:"")); }
+const LINK = {kind:null, url:"", busy:false};
+async function makeLink(kind){
+  LINK.busy = true; LINK.kind = kind; LINK.url = ""; renderProfile();
+  try{
+    LINK.url = kind==="transfer" ? await packLink("transfer", S) : await packLink("friend", friendPayload());
+    if(kind==="transfer"){ S.lastBackup = today(); save(); dirty.add("home"); }
+  }catch(e){ LINK.url = ""; toast("Couldn't make the link in this browser."); }
+  LINK.busy = false; renderProfile();
+  const box = $("#link-box"); if(box) box.scrollIntoView({block:"center"});
+}
+function linkPanel(kind){
+  if(LINK.kind!==kind) return "";
+  if(LINK.busy) return `<p class="muted small" id="link-box">Making your link…</p>`;
+  if(!LINK.url) return "";
+  const kb = Math.ceil(LINK.url.length/1024);
+  return `<div class="track-box" id="link-box"><textarea readonly rows="3" id="link-text" aria-label="Your link">${esc(LINK.url)}</textarea>
+    <div class="actions"><button class="btn" data-act="copylink">Copy link</button>${navigator.share?`<button class="btn ghost" data-act="sharelink">Share…</button>`:""}<span class="muted small">${kb} KB${kb>60?" · long links can get cut off in some apps, so email works best":""}</span></div>
+    <p class="muted small">${kind==="transfer"?"Open it on your other phone or computer. It holds your whole shelf, notes included, so send it only to yourself (email or AirDrop work well).":"Anyone with this link can see the books and ratings in it. It doesn't update itself: make a new one after you've read more."}</p></div>`;
+}
+
+/* Incoming: a whole shelf from another device */
+let IN = null;
+async function renderIncoming(code){
+  const el = $("#v-incoming");
+  try{ const j = cleanState(await unpack(code)); if(!j) throw new Error("bad"); IN = j; }
+  catch(e){ IN = null; el.innerHTML = `<div class="onb"><div class="block"><div class="eyebrow">Move devices</div><h2>That link didn't work</h2><p class="lede">${esc(linkErr(e))}</p></div><div class="actions"><button class="btn" data-act="incancel">Go to my shelf</button></div></div>`; return; }
+  const cnt = sh => { const c={}; Object.values(sh).forEach(e=>c[e.st]=(c[e.st]||0)+1); return c; };
+  const ci = cnt(IN.shelf), mine = Object.keys(S.shelf).length, cm = cnt(S.shelf);
+  const line = c => [["read","read"],["reading","reading"],["want","on the list"],["dnf","didn't finish"]].filter(([k])=>c[k]).map(([k,l])=>`${c[k]} ${l}`).join(", ") || "no books";
+  el.innerHTML = `<div class="onb">
+    <div class="block"><div class="eyebrow">Move devices</div><h2>${IN.profile.name?esc(IN.profile.name)+"'s shelf":"A shelf"} from another device</h2>
+      <p class="lede">This link holds ${Object.keys(IN.shelf).length} books: ${line(ci)}.</p></div>
+    ${mine?`<p class="notice">This device already has ${mine} books (${line(cm)}). <b>Merge</b> keeps both, using the link's version where a book is on both. <b>Replace</b> erases this device's shelf first.</p>`:""}
+    <div class="actions">${mine?`<button class="btn big" data-act="inmerge">Merge into this shelf</button><button class="btn ghost" data-act="inreplace">Replace this shelf</button>`:`<button class="btn big" data-act="inreplace" data-armed="1">Use this shelf here</button>`}<button class="btn quiet" data-act="incancel">Cancel</button></div>
+  </div>`;
+}
+function mergeIncoming(){
+  for(const [id,b] of Object.entries(IN.custom)) if(!S.custom[id]) S.custom[id] = b;
+  for(const [id,e] of Object.entries(IN.shelf)){ const cur = S.shelf[id]; S.shelf[id] = cur ? {...cur, ...e, r:e.r||cur.r, note:e.note||cur.note} : e; }
+  IN.profile.favorites.forEach(f=>{ if(!S.profile.favorites.includes(f)) S.profile.favorites.push(f); });
+  Object.assign(S.friends, IN.friends);
+  if(!S.profile.onboarded) S.profile = IN.profile;
+}
+
+/* Friends: a read-only snapshot of someone's read books and ratings */
+function friendPayload(){
+  const b = Object.entries(S.shelf).filter(([,e])=>e.st==="read").map(([id,e])=>{ const bk = book(id); if(!bk) return null; const fav = S.profile.favorites.includes(id) ? 1 : 0; return CATMAP[id] ? [id, e.r||0, fav] : [null, e.r||0, fav, bk.t, bk.a]; }).filter(Boolean);
+  return {k:"friend", v:1, n:S.profile.name||"", d:today(), b};
+}
+function cleanFriend(j){
+  if(!j || j.k!=="friend" || !Array.isArray(j.b)) return null;
+  const books = j.b.slice(0,3000).map(x=>{ if(!Array.isArray(x)) return null; const r = numIn(x[1],0.5,5);
+    if(typeof x[0]==="string" && CATMAP[x[0]]) return {id:x[0], b:CATMAP[x[0]], r:r?Math.round(r*2)/2:null, fav:!!x[2]};
+    if(x[0]===null && x[3]) return {id:null, t:str(x[3],300), a:str(x[4],200), r:r?Math.round(r*2)/2:null, fav:!!x[2]};
+    return null; }).filter(Boolean);
+  return {name:str(j.n,60)||"Your friend", date:isDate(j.d), books};
+}
+let FR = null;
+// 0-100: how closely your ratings line up with theirs. Books you've both rated count fully;
+// books only they've read count a little, using your predicted rating.
+function tasteMatch(F){
+  const theirs = F.books.filter(x=>x.b && x.r);
+  const both = theirs.filter(x=>status(x.id)==="read" && entry(x.id).r);
+  const predicted = RATED.length>=3 ? theirs.filter(x=>!status(x.id)) : [];
+  if(!both.length && predicted.length<5) return null;
+  let wsum=0, dsum=0;
+  both.forEach(x=>{ wsum+=1; dsum+=Math.abs(entry(x.id).r - x.r); });
+  predicted.forEach(x=>{ const w=0.3; wsum+=w; dsum+=w*Math.abs(fit(x.id).pred - x.r); });
+  const score = Math.round(Math.max(5, Math.min(99, 100 - (dsum/wsum)*38)));
+  const label = score>=82?"Very similar taste":score>=68?"Similar taste":score>=52?"Some overlap":"Different tastes";
+  return {score, label, both, nPred:predicted.length};
+}
+async function renderFriend(code){
+  const el = $("#v-friend");
+  if(!FR || FR.code!==code){
+    try{ const F = cleanFriend(await unpack(code)); if(!F) throw new Error("bad"); FR = {...F, code}; }
+    catch(e){ FR = null; el.innerHTML = `<div class="block"><div class="eyebrow">A friend's shelf</div><h2>That link didn't work</h2><p class="lede">${esc(linkErr(e))}</p></div><div class="actions"><button class="btn" data-act="incancel">Go to my shelf</button></div>`; return; }
+  }
+  const F = FR, name = esc(F.name), rated = F.books.filter(x=>x.r);
+  const avg = rated.length ? rated.reduce((a,x)=>a+x.r,0)/rated.length : null;
+  const m = S.profile.onboarded ? tasteMatch(F) : null;
+  const mineDone = id => ["read","dnf","passed"].includes(status(id));
+  const loved = F.books.filter(x=>x.b && x.r>=4 && !mineDone(x.id)).sort((a,c)=>(c.r+(c.fav?0.5:0))-(a.r+(a.fav?0.5:0)) || fit(c.id).score-fit(a.id).score);
+  const showN = FR.all ? loved.length : 10;
+  const bothLoved = m ? m.both.filter(x=>x.r>=4.5 && entry(x.id).r>=4.5) : [];
+  const split = m ? m.both.filter(x=>Math.abs(x.r-entry(x.id).r)>=1.5).sort((a,c)=>Math.abs(c.r-entry(c.id).r)-Math.abs(a.r-entry(a.id).r)) : [];
+  const others = F.books.filter(x=>!x.b);
+  const saved = Object.values(S.friends).some(f=>f.code===code);
+  el.innerHTML = `
+  <div class="block"><div class="eyebrow">A friend's shelf${F.date?` · shared ${dateTxt(F.date)}`:""}</div>
+    <h1>${name}'s books</h1>
+    <p class="lede">${F.books.length} book${F.books.length===1?"":"s"} read${avg?`, averaging ${fmt1(avg)}★`:""}. This is a snapshot ${name} sent you. It's read-only and never changes your own recommendations.</p></div>
+  ${!S.profile.onboarded?`<div class="panel block"><h3>Start your own shelf to compare</h3><p class="small">Set up your own Bookshelf in about a minute and you'll see how your taste matches ${name}'s. Your shelf stays on your device.</p><div class="actions"><button class="btn" data-act="frstart">Set up my shelf</button></div></div>`:""}
+  ${m?`<div class="grid3">
+    <div class="panel feature"><div class="eyebrow">Taste match</div><div class="kpi" style="border:0;padding:0"><b>${m.score}</b></div><div class="t">${m.label}</div>
+      <p class="muted small">From ${m.both.length} book${m.both.length===1?"":"s"} you've both rated${m.nPred?`, plus how Bookshelf predicts you'd rate ${m.nPred} more of theirs`:""}.${m.both.length<5?" It firms up as you share more books.":""}</p></div>
+    <div class="panel feature"><div class="eyebrow">You both loved</div>${bothLoved.length?bothLoved.slice(0,6).map(x=>`<div class="small"><b>${esc(x.b.t)}</b> <span class="muted">you ${starTxt(entry(x.id).r)}, ${name} ${starTxt(x.r)}</span></div>`).join(""):`<p class="muted small">No shared 4.5★+ books yet.</p>`}</div>
+    <div class="panel feature"><div class="eyebrow">Where you disagree</div>${split.length?split.slice(0,6).map(x=>`<div class="small"><b>${esc(x.b.t)}</b> <span class="muted">you ${starTxt(entry(x.id).r)}, ${name} ${starTxt(x.r)}</span></div>`).join(""):`<p class="muted small">${m.both.length?"No big disagreements.":"Rate more of the same books to see this."}</p>`}</div>
+  </div>`:(S.profile.onboarded?`<p class="notice">Rate a few books you've read and you'll see how your taste matches ${name}'s.</p>`:"")}
+  <div class="block"><h2>${name}'s favorites you haven't read</h2><p class="muted small">Books ${name} rated 4★ or higher${S.profile.onboarded?", with your fit score for each. Open one to add it to your list.":", best first."}</p>
+    ${loved.length?`<ul class="books">${loved.slice(0,showN).map(x=>bookCard(x.b,{ctx:"fr", note:`${F.name} ${starTxt(x.r)}${x.fav?" · all-time favorite":""}`, badge: RATED.length ? null : `<span class="score ${rCls(x.r)}" title="${name}'s rating"><span><b>${x.r%1?x.r.toFixed(1):x.r}</b><small>stars</small></span></span>`})).join("")}</ul>${loved.length>10?`<button class="btn ghost" data-act="frall">${FR.all?"Show top 10":"Show all "+loved.length}</button>`:""}`:`<p class="empty">${rated.length?`You've already read everything ${name} rated 4★ or higher.`:`${name} hasn't rated any books yet.`}</p>`}</div>
+  ${others.length?`<div class="block"><h3>Also on ${name}'s shelf</h3><p class="muted small">Not in the Bookshelf catalog, so there's no fit score.</p><p class="small">${others.slice(0,60).map(x=>`${esc(x.t)} <span class="muted">(${esc(x.a)}${x.r?`, ${starTxt(x.r)}`:""})</span>`).join(" · ")}</p></div>`:""}
+  <div class="actions">${saved?`<span class="muted small">Saved on this device. Find it later under Profile → Friends.</span>`:`<button class="btn ghost" data-act="frsave">Save ${name}'s shelf on this device</button>`}${S.profile.onboarded?`<a class="btn quiet" href="#home">Back to my shelf</a>`:""}</div>`;
+}
+
+/* ---------- keeping the shelf safe ---------- */
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+const STANDALONE = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone===true;
+let PERSIST = null, persistTried = false, INSTALL = null;
+// Ask the browser to treat this site's storage as permanent, so it isn't cleared to save space.
+function protect(){
+  if(!navigator.storage || !navigator.storage.persisted) return;
+  navigator.storage.persisted().then(p=>{ PERSIST = p;
+    if(!p && !persistTried && Object.keys(S.shelf).length){ persistTried = true; return navigator.storage.persist().then(r=>{ PERSIST = r; if(current==="profile") renderProfile(); }); }
+  }).catch(()=>{});
+}
+window.addEventListener("beforeinstallprompt", e=>{ e.preventDefault(); INSTALL = e; dirty.add("profile"); dirty.add("home"); if(current==="home") renderHome(); });
+const daysSince = d => d ? Math.floor((Date.now() - new Date(d+"T12:00:00"))/864e5) : Infinity;
+const hintOff = k => daysSince(S.hints && S.hints[k]) < (k==="ios"?21:14);
+function safetyNotices(){
+  const n = Object.keys(S.shelf).length, out = [];
+  if(!n) return "";
+  if(IOS && !STANDALONE && !hintOff("ios")) out.push(`<div class="notice"><b>Keep your shelf safe on iPhone.</b> Safari can erase a website's saved data if you don't visit for about a week. Add Bookshelf to your Home Screen to stop that: tap the Share button, then <b>Add to Home Screen</b>, and open it from there. <button class="btn quiet" data-act="hint" data-k="ios">Got it</button></div>`);
+  else if(INSTALL && !STANDALONE && !hintOff("install")) out.push(`<div class="notice"><b>Install Bookshelf as an app</b> so it opens like one and your browser is less likely to clear it. <button class="btn" data-act="install">Install</button> <button class="btn quiet" data-act="hint" data-k="install">Not now</button></div>`);
+  if(n>=5 && daysSince(S.lastBackup)>30 && !hintOff("backup")) out.push(`<div class="notice"><b>${S.lastBackup?`Your last backup was ${dateTxt(S.lastBackup)}.`:"You haven't backed up your shelf yet."}</b> It's saved only in this browser, so a backup is your safety net. <span class="actions" style="display:inline-flex;margin-top:.4rem"><button class="btn" data-act="backup">Download backup</button><button class="btn ghost" data-act="gotransfer">Send to another device</button><button class="btn quiet" data-act="hint" data-k="backup">Later</button></span></div>`);
+  return out.join("");
 }
 
 const tip = $("#tip");
@@ -791,4 +1043,5 @@ document.addEventListener("pointermove", e=>{ if(!tip.hidden){ tip.style.left=Ma
 let rz; window.addEventListener("resize", ()=>{ clearTimeout(rz); rz=setTimeout(()=>{ if(current==="taste") scatter(); },150); });
 
 recompute();
+protect();
 show(location.hash.slice(1) || "home");

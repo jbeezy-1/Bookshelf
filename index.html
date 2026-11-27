@@ -105,6 +105,10 @@ section[data-view]{display:grid;gap:1.6rem}
 .pill.reading{background:var(--gold);color:var(--paper)}
 .pill.pass{background:var(--panel);color:var(--muted);text-decoration:line-through}
 .pill.read{background:var(--panel);color:var(--ink)}
+.pill.dnf{background:transparent;border:1px solid var(--gold);color:var(--gold)}
+.pill.series{background:transparent;border:1px solid var(--accent);color:var(--accent)}
+.score.fit.dnf{background:conic-gradient(var(--gold) calc(var(--v)*1%), var(--track) 0)}
+.notice .btn{margin-top:.3rem}
 .pill.sparse{background:transparent;border:1px dashed var(--muted);color:var(--muted)}
 
 .controls{display:grid;gap:.9rem}
@@ -218,12 +222,15 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
   <section data-view="browse" id="v-browse" hidden></section>
   <section data-view="taste" id="v-taste" hidden></section>
   <section data-view="profile" id="v-profile" hidden></section>
+  <section data-view="friend" id="v-friend" hidden></section>
+  <section data-view="incoming" id="v-incoming" hidden></section>
 </main>
 <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="Add a book"><div class="inner" id="sheet-inner"></div></div>
 <div class="tip" id="tip" hidden></div>
 <div class="toast" id="toast" hidden role="status"></div>
 <noscript><p class="wrap">Bookshelf needs JavaScript turned on.</p></noscript>
 <script src="catalog.js"></script>
+<script src="catalog-new.js"></script>
 <script src="model.js"></script>
 <script src="app.js"></script>
 <script>
