@@ -35,13 +35,16 @@ const MODEL = {
   offLanePenalty: 0.15,
   lengthBoost: 0.1,
   seriesBoost: 0.08,
-  maxPred: 4.9
+  maxPred: 4.9,
+  // Books you didn't finish or passed on act as mild "less like this" examples.
+  negWeight: {dnf:0.6, passed:0.3},
+  negRating: {dnf:2, passed:2.5}  // used when there's no "rating so far"
 };
 
 // Similarity over the details both books have. Missing details are skipped, not guessed.
-function similarity(c, r){
+function similarity(c, r, skip){
   const W = MODEL.weights; let s=0, tot=0;
-  const add = (k, v) => { if(v===null || v===undefined || Number.isNaN(v)) return; s += W[k]*v; tot += W[k]; };
+  const add = (k, v) => { if(skip===k || v===null || v===undefined || Number.isNaN(v)) return; s += W[k]*v; tot += W[k]; };
   if(c.lane && r.lane) add("lane", c.lane===r.lane ? 1 : 0);
   if(c.tags.length && r.tags.length){
     const a = new Set(c.tags), b = new Set(r.tags); let inter=0; a.forEach(x=>{ if(b.has(x)) inter++; });
@@ -67,11 +70,14 @@ function tasteProfile(rated){
   return {mean, raw, n, aff};
 }
 
-function fitFor(c, rated, TP, prefs){
+function fitFor(c, rated, TP, prefs, neg=[]){
   const mean = TP.mean;
   const sims = rated.map(r=>({r, score:similarity(c,r)})).sort((x,y)=>y.score-x.score);
   let num=0, den=0;
   sims.forEach(s=>{ const w = Math.pow(s.score, MODEL.neighborPower) * (prefs.favorites.includes(s.r.id) ? MODEL.favoriteWeight : 1); num += w*(s.r.r-mean); den += w; });
+  // Dialogue level is left out here on purpose: stopping one talky book shouldn't count against every talky book.
+  const negSims = neg.map(n=>({r:n, score:similarity(c,n,"talk")})).sort((x,y)=>y.score-x.score);
+  negSims.forEach(s=>{ const w = Math.pow(s.score, MODEL.neighborPower) * s.r.w; num += w*(Math.min(s.r.r, mean)-mean); den += w; });
   const knn = num/(den+MODEL.shrink);
   const known = c.tags.filter(t=>TP.aff[t]);
   const tagDev = known.length ? known.reduce((a,t)=>a+TP.aff[t].dev,0)/known.length : 0;
@@ -88,11 +94,13 @@ function fitFor(c, rated, TP, prefs){
   if(prefs.series==="series" && c.series && !/stands alone/.test(c.series)) pred += MODEL.seriesBoost;
   const score = pred;                       // uncapped, used for ranking
   pred = Math.max(1, Math.min(MODEL.maxPred, pred));
-  const lo = mean-0.45, hi = mean+0.45+MODEL.hookBoost*Math.max(1, prefs.hooks.length); // top of scale = a close match with every hook
-  const fit = Math.round(Math.max(0, Math.min(99, (score-lo)/(hi-lo)*100)));
+  // Fit is the predicted rating on a 0-100 scale, so the two always agree: 3★ = 20, 4★ = 60, 4.5★ = 80, 5★ = 100.
+  const fit = fitFromStars(score);
   const strong = known.filter(t=>TP.aff[t].n>=2 && TP.aff[t].avg>=Math.max(4.3, (TP.raw||4)+0.2)).sort((a,b)=>TP.aff[b].avg-TP.aff[a].avg);
-  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3)};
+  const warn = negSims.find(s=>s.score>0.55) || null;
+  return {pred, score, fit, hooks, offLane, strong, near: sims.slice(0,3), warn};
 }
+const fitFromStars = s => Math.round(Math.max(0, Math.min(99, (s-2.5)/2.5*100)));
 
 // Rough details for a book found on Open Library, from its subject labels.
 function detailsFromSubjects(subjects){

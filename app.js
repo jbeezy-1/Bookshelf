@@ -52,7 +52,9 @@ function cleanState(j){
   const s = blank(), P = j.profile||{};
   s.profile = {name:str(P.name,60), lanes:(Array.isArray(P.lanes)?P.lanes:[]).filter(l=>LANES.includes(l)), hooks:(Array.isArray(P.hooks)?P.hooks:[]).filter(h=>TAGS[h]).slice(0,4),
     favorites:(Array.isArray(P.favorites)?P.favorites:[]).map(String).slice(0,50), length:["short","medium","long"].includes(P.length)?P.length:null,
-    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today()};
+    series:["mix","standalone","series"].includes(P.series)?P.series:"mix", onboarded:!!P.onboarded, created:isDate(P.created)||today(), goals:{}};
+  for(const [y,n] of Object.entries(P.goals||{})){ const g = numIn(n,1,500); if(/^\d{4}$/.test(y) && g) s.profile.goals[y] = Math.round(g); }
+  for(const [k,v] of Object.entries(j.hints||{})){ if(/^[a-z0-9]{1,20}$/.test(k) && isDate(v)) s.hints[k] = v; }
   for(const [id,b] of Object.entries(j.custom||{})) if(b && typeof b==="object" && /^(gr|ol)-[a-z0-9-]+$/.test(id)) s.custom[id] = cleanBook(b, id);
   for(const [id,e] of Object.entries(j.shelf)){ if(!e || typeof e!=="object" || !(CATMAP[id] || s.custom[id])) continue; const c = cleanEntry(e); if(c) s.shelf[id] = c; }
   s.next = typeof j.next==="string" && s.shelf[j.next] ? j.next : null;
@@ -74,15 +76,16 @@ function setEntry(id, patch){
 }
 
 /* ---------- derived ---------- */
-let RATED = [], TP = null, FIT = {}, PREFS = null;
+let RATED = [], TP = null, FIT = {}, PREFS = null, NEG = [];
 function readBooks(){ return Object.entries(S.shelf).filter(([,e])=>e.st==="read").map(([id,e])=>({...book(id), ...e, id})).filter(b=>b.t); }
 function recompute(){
   RATED = readBooks().filter(b=>b.r>0);
   TP = tasteProfile(RATED);
   PREFS = {lanes:S.profile.lanes||[], hooks:S.profile.hooks||[], favorites:S.profile.favorites||[], length:S.profile.length, series:S.profile.series};
+  NEG = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf"||e.st==="passed").map(([id,e])=>{ const b = book(id); return b && {...b, id, st:e.st, r:e.st==="dnf"&&e.dr ? e.dr : MODEL.negRating[e.st], w:MODEL.negWeight[e.st]}; }).filter(Boolean);
   FIT = {}; SN = null;
 }
-function fit(id){ if(!FIT[id]){ const b = book(id); FIT[id] = fitFor(b, RATED, TP, PREFS); } return FIT[id]; }
+function fit(id){ if(!FIT[id]){ const b = book(id); FIT[id] = fitFor(b, RATED, TP, PREFS, NEG); } return FIT[id]; }
 function pagesPerDay(){
   const done = readBooks().filter(b=>b.start && b.fin && b.p);
   const spans = done.map(b=>({p:b.p, d:Math.max(1,(new Date(b.fin)-new Date(b.start))/864e5)})).filter(x=>x.d<400);
@@ -141,6 +144,7 @@ function whyLines(b){
   if(f.strong.length){ const t=f.strong[0]; out.push(`Books you've rated with “${TAGS[t]}” average ${fmt1(TP.aff[t].avg)}★.`); }
   const top = f.near[0];
   if(top && top.score>0.45 && top.r.r < (TP.raw||4)-0.4) out.push(`Heads up: it's closest to ${top.r.t}, which you rated ${starTxt(top.r.r)}.`);
+  if(f.warn) out.push(`Heads up: it's a lot like ${f.warn.r.t}, which you ${f.warn.r.st==="dnf"?"didn't finish":"passed on"}. That lowers its score a little.`);
   if(f.offLane) out.push(`It's outside the genres you picked (${b.lane}).`);
   if(b.p) out.push(`About ${daysFor(b.p)} days at ${pagesPerDay().basis} (${pagesPerDay().ppd} pages a day).`);
   if(!RATED.length) out.unshift("Rate a few books you've read and these reasons get specific.");
@@ -340,6 +344,7 @@ function renderHome(){
       ${read.length?`<p class="small"><a href="#profile" data-act="gofriend">Share your shelf with a friend</a> to compare tastes.</p>`:""}
     </div>
   </div>
+  ${goalPanel()}
   ${series.length?`<div class="block"><h2>Next in your series</h2><p class="muted small">You've started these. Here's the next one in each that you haven't read.</p>
     <ul class="books">${series.map(x=>bookCard(x.b,{ctx:"ser", note:x.gap?`${x.name} #${x.k}`:`${x.name} #${x.k}, after ${x.after.t}`})).join("")}</ul></div>`:""}
   ${read.length?`<div class="block"><h2>Your shelf</h2><p class="muted small">Spine width is book length. Darker means a higher rating.</p>
@@ -367,6 +372,82 @@ function insights(){
   const auth={}; readBooks().forEach(b=>auth[b.a]=(auth[b.a]||0)+1); const rep=Object.entries(auth).filter(([,n])=>n>1).sort((a,b)=>b[1]-a[1]).slice(0,3);
   if(rep.length) out.push(`Most-read author${rep.length>1?"s":""}: ${rep.map(([a,n])=>`${esc(a)} (${n})`).join(", ")}.`);
   return out;
+}
+
+/* ---------- reading goal ---------- */
+const goalFor = y => (S.profile.goals||{})[y] || null;
+const finishedIn = y => readBooks().filter(b=>b.fin && b.fin.startsWith(String(y)));
+let GOALEDIT = false;
+function goalPanel(){
+  const y = new Date().getFullYear(), g = goalFor(y), n = finishedIn(y).length;
+  if(GOALEDIT || !g){
+    if(!GOALEDIT && S.hints && S.hints["goal"+y]) return `<p class="muted small"><a href="#year" >Your ${y} in books</a> · <a href="#home" data-act="goaledit">Set a ${y} reading goal</a></p>`;
+    return `<div class="panel resultbar"><span><b>${g?"Change your":"Set a"} ${y} reading goal</b> <span class="muted small">How many books do you want to finish this year?</span></span>
+      <span class="actions"><input type="number" id="goal-n" min="1" max="500" value="${g||Math.max(12, n+4)}" style="width:6rem" aria-label="Books this year"><button class="btn" data-act="goalsave">Save</button>${g?`<button class="btn quiet" data-act="goaloff">Remove goal</button>`:`<button class="btn quiet" data-act="hint" data-k="goal${y}">No thanks</button>`}</span></div>`;
+  }
+  const start = new Date(y,0,1), end = new Date(y+1,0,1), frac = (Date.now()-start)/(end-start);
+  const due = g*frac, diff = Math.round(n-due), pct = Math.min(100, Math.round(n/g*100));
+  const pace = n>=g ? `Goal reached${n>g?`, ${n-g} over`:""}. Nice.` : diff>=1 ? `${diff} book${diff===1?"":"s"} ahead of pace.` : diff<=-1 ? `${-diff} book${diff===-1?"":"s"} behind pace. ${Math.ceil((g-n)/Math.max(1,(end-Date.now())/(7*864e5)))} a week gets you there.` : "Right on pace.";
+  return `<div class="panel block"><div class="resultbar"><span><span class="eyebrow">${y} goal</span><div class="t" style="font-family:var(--display);font-size:1.25rem">${n} of ${g} books</div></span><span class="actions"><a class="btn ghost" href="#year">Your ${y} in books</a><button class="btn quiet" data-act="goaledit">Edit</button></span></div>
+    <div class="progress" title="${pct}%"><i style="width:${pct}%"></i></div><p class="muted small">${pace}</p></div>`;
+}
+
+/* ---------- Year in review ---------- */
+let YEAR = null;
+function renderYear(){
+  const all = readBooks(), years = [...new Set(all.filter(b=>b.fin).map(b=>+b.fin.slice(0,4)))].sort((a,b)=>b-a);
+  const thisY = new Date().getFullYear(); if(!years.includes(thisY)) years.unshift(thisY);
+  const y = YEAR && years.includes(YEAR) ? YEAR : years[0];
+  const books = finishedIn(y), prev = finishedIn(y-1), g = goalFor(y);
+  const undated = all.filter(b=>!b.fin).length;
+  const chips = years.length>1 ? `<div class="chips">${years.map(v=>`<button class="chip" data-year="${v}" aria-pressed="${v===y}">${v}</button>`).join("")}</div>` : "";
+  const head = `<div class="block"><div class="eyebrow">Year in review</div><h1>Your ${y} in books</h1>${chips}</div>`;
+  if(!books.length){ $("#v-year").innerHTML = head + `<p class="empty">No finished books dated ${y} yet. Books count here once they have a finish date${undated?`. ${undated} of your read books ${undated===1?"doesn't":"don't"} have one: open them in My books to add it`:""}.</p>`; return; }
+  const pages = books.reduce((a,b)=>a+(b.p||0),0), rated = books.filter(b=>b.r), avg = rated.length ? rated.reduce((a,b)=>a+b.r,0)/rated.length : null;
+  const top = [...rated].sort((a,b)=>b.r-a.r || (b.p||0)-(a.p||0));
+  const best = top.filter(b=>b.r===top[0].r).slice(0,5);
+  const withP = books.filter(b=>b.p), longest = [...withP].sort((a,b)=>b.p-a.p)[0], shortest = [...withP].sort((a,b)=>a.p-b.p)[0];
+  const timed = books.filter(b=>b.start && b.fin && b.p).map(b=>({b, d:Math.max(1,Math.round((new Date(b.fin)-new Date(b.start))/864e5))})).filter(x=>x.d<400);
+  const fastest = [...timed].sort((a,c)=>c.b.p/c.d - a.b.p/a.d)[0];
+  const months = Array.from({length:12},(_,i)=>{ const k = `${y}-${String(i+1).padStart(2,"0")}`; return {label:new Date(y,i,1).toLocaleDateString("en-US",{month:"short"}), v:books.filter(b=>b.fin.startsWith(k)).length}; });
+  const busiest = [...months].sort((a,b)=>b.v-a.v)[0];
+  const lanes = LANES.map(l=>({label:l, v:books.filter(b=>b.lane===l).length})).filter(x=>x.v).sort((a,b)=>b.v-a.v);
+  const prevL = {}; prev.forEach(b=>{ if(b.lane) prevL[b.lane]=(prevL[b.lane]||0)+1; });
+  const shift = prev.length>=3 ? lanes.map(x=>({l:x.label, d:x.v-(prevL[x.label]||0)})).concat(Object.keys(prevL).filter(l=>!lanes.some(x=>x.label===l)).map(l=>({l, d:-prevL[l]}))).filter(x=>Math.abs(x.d)>=2).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)).slice(0,3) : [];
+  const auth = {}; books.forEach(b=>auth[b.a]=(auth[b.a]||0)+1); const topAuth = Object.entries(auth).filter(([,n])=>n>1).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const pubs = books.filter(b=>b.y), oldest = [...pubs].sort((a,b)=>a.y-b.y)[0], newest = [...pubs].sort((a,b)=>b.y-a.y)[0];
+  const dnf = Object.entries(S.shelf).filter(([,e])=>e.st==="dnf" && e.stop && e.stop.startsWith(String(y))).length;
+  const seriesDone = books.filter(b=>parseSeries(b.series)).length;
+  const facts = [];
+  if(longest) facts.push(`Longest: <b>${esc(longest.t)}</b>, ${fmt(longest.p)} pages.`);
+  if(shortest && shortest!==longest) facts.push(`Shortest: <b>${esc(shortest.t)}</b>, ${fmt(shortest.p)} pages.`);
+  if(fastest) facts.push(`Fastest read: <b>${esc(fastest.b.t)}</b>, ${fmt(fastest.b.p/fastest.d)} pages a day over ${fastest.d} day${fastest.d===1?"":"s"}.`);
+  if(busiest.v>1) facts.push(`Busiest month: <b>${busiest.label}</b>, ${busiest.v} books.`);
+  if(topAuth.length) facts.push(`Most-read author${topAuth.length>1?"s":""}: ${topAuth.map(([a,n])=>`<b>${esc(a)}</b> (${n})`).join(", ")}.`);
+  if(oldest && newest && oldest!==newest) facts.push(`Oldest book: <b>${esc(oldest.t)}</b> (${oldest.y<0?-oldest.y+" BC":oldest.y}). Newest: <b>${esc(newest.t)}</b> (${newest.y}).`);
+  if(seriesDone) facts.push(`${seriesDone} of your books were part of a series.`);
+  if(dnf) facts.push(`You set aside ${dnf} book${dnf===1?"":"s"} without finishing. Life's short.`);
+  shift.forEach(x=>facts.push(`${x.d>0?"More":"Less"} <b>${esc(x.l)}</b> than ${y-1} (${x.d>0?"+":""}${x.d}).`));
+  const shelf = [...books].sort((a,b)=>String(a.fin).localeCompare(String(b.fin)));
+  $("#v-year").innerHTML = head + `
+  <div class="kpis">
+    <div class="kpi"><b>${books.length}</b><span>books finished${g?` of ${g}`:""}</span></div>
+    <div class="kpi"><b>${fmt(pages)}</b><span>pages</span></div>
+    <div class="kpi"><b>${avg?fmt1(avg)+"★":"–"}</b><span>average rating</span></div>
+    <div class="kpi"><b>${fmt(pages/ (y===thisY ? Math.max(1,(Date.now()-new Date(y,0,1))/864e5) : 365))}</b><span>pages a day</span></div>
+    <div class="kpi"><b>${prev.length?(books.length-prev.length>=0?"+":"")+(books.length-prev.length):"–"}</b><span>vs. ${y-1}</span></div>
+    <div class="kpi"><b>${lanes[0]?esc(lanes[0].label):"–"}</b><span>top genre</span></div>
+  </div>
+  ${g?`<div class="block"><div class="progress"><i style="width:${Math.min(100,Math.round(books.length/g*100))}%"></i></div><p class="muted small">${books.length>=g?`Goal of ${g} reached.`:`${g-books.length} to go to reach your goal of ${g}.`}</p></div>`:""}
+  <div class="block"><h2>Your ${y} shelf</h2><p class="muted small">In the order you finished them. Darker means a higher rating.</p>
+    <div class="shelf">${shelf.map((b,i)=>`<button class="spine ${rCls(b.r)}" style="flex:${b.p||300} 1 0;height:${80+((i*37)%21)}%" data-act="open" data-id="${b.id}" title="${esc(b.t)}${b.r?", "+starTxt(b.r):""}"><span>${esc(b.t)}</span></button>`).join("")}</div></div>
+  <div class="grid2">
+    <div class="panel block"><h3>Your best of ${y}</h3>${best.length?`<ul class="insights">${best.map(b=>`<li><b>${esc(b.t)}</b> <span class="muted">${esc(b.a)} · ${starTxt(b.r)}</span></li>`).join("")}</ul>`:`<p class="muted small">Rate the books you finished to see your favorites.</p>`}</div>
+    <div class="panel block"><h3>The year in numbers</h3><ul class="insights">${facts.map(f=>`<li>${f}</li>`).join("")}</ul></div>
+    <div class="panel block"><h3>Books by month</h3>${hbars(months,"")}</div>
+    <div class="panel block"><h3>By genre</h3>${hbars(lanes," books")}</div>
+  </div>
+  ${undated?`<p class="muted small">${undated} read book${undated===1?" has":"s have"} no finish date, so ${undated===1?"it isn't":"they aren't"} counted here. Add dates in My books.</p>`:""}`;
 }
 
 /* ---------- Discover ---------- */
@@ -507,7 +588,7 @@ function renderBrowseResults(){
   const n = ["len","pace","talk","pov","era","series"].filter(k=>BS[k]!=="any").length + BS.lanes.length + BS.tags.length + (BS.award?1:0) + (BS.hideShelf?1:0);
   const a = $("#b-active"); if(a) a.textContent = n ? `· ${n} active` : "";
   const el = $("#b-results"); if(!el) return;
-  el.innerHTML = `<div class="resultbar"><h3>${fmt(list.length)} book${list.length===1?"":"s"}</h3><span class="muted small">Circles show fit for you (0–100).</span></div>
+  el.innerHTML = `<div class="resultbar"><h3>${fmt(list.length)} book${list.length===1?"":"s"}</h3><span class="muted small">Fit is your predicted rating on a 0–100 scale: 60 ≈ 4★, 80 ≈ 4.5★.</span></div>
     ${list.length?`<ul class="books">${list.slice(0,BS.limit).map(b=>bookCard(b,{ctx:"br"})).join("")}</ul>`:`<p class="empty">No books match. <button class="btn ghost" data-act="bclear">Clear filters</button></p>`}
     ${list.length>BS.limit?`<button class="btn ghost" data-act="bmore">Show more (${fmt(list.length-BS.limit)} left)</button>`:""}`;
 }
@@ -537,6 +618,7 @@ function renderTaste(){
   const dec = {}; read.forEach(b=>{ if(b.y){ const d=b.y<1900?"Before 1900":Math.floor(b.y/10)*10+"s"; dec[d]=(dec[d]||0)+1; } });
   const loo = RATED.length>=6 ? RATED.map(r=>{ const others=RATED.filter(x=>x!==r); return Math.abs(fitFor(r, others, tasteProfile(others), PREFS).pred - r.r); }).reduce((a,b)=>a+b,0)/RATED.length : null;
   $("#v-taste").innerHTML = `
+  <p><a class="btn ghost" href="#year">Your ${new Date().getFullYear()} in books</a></p>
   <div class="block"><div class="eyebrow">My taste</div><h2>What ${RATED.length} ratings say</h2>
     <p class="lede">Each chart compares groups of books you've rated. The dashed line is your average of ${fmt1(ref)}★. The number of books sits beside every average, since small groups swing easily.</p></div>
   <div class="grid2">
@@ -553,7 +635,8 @@ function renderTaste(){
   </div>
   ${tagRows.length?`<div class="panel block"><h3>By theme</h3><p class="muted small">Themes in at least two of your rated books. Bold rows are the ones you said hook you.</p>${dotPlot(tagRows,ref)}</div>`:""}
   <div class="panel block"><h3>How fit scores work</h3>
-    <p>For each book, Bookshelf finds the books you've rated that are most like it (genre, themes, narration, pace, dialogue, length and era), averages your ratings of those with the closest counting most, and blends in how you rate each theme. Books with the things you said hook you get a boost, and genres you didn't pick get a small penalty. Your favorites count extra.</p>
+    <p>For each book, Bookshelf finds the books you've rated that are most like it (genre, themes, narration, pace, dialogue, length and era), averages your ratings of those with the closest counting most, and blends in how you rate each theme. Books with the things you said hook you get a boost, and genres you didn't pick get a small penalty. Your favorites count extra. Books you didn't finish or passed on count a little against books very like them (but never for having lots of dialogue).</p>
+    <p style="margin-top:.6rem">The fit score is just the predicted rating on a 0–100 scale: 40 ≈ 3.5★, 60 ≈ 4★, 80 ≈ 4.5★, 99 ≈ 5★.</p>
     ${loo!==null?`<p class="muted" style="margin-top:.6rem">Tested on your own ratings (hiding each one and predicting it from the rest), it's off by about ${fmt1(loo)}★ on average. It gets sharper with every rating.</p>`:""}</div>`;
   scatter();
 }
@@ -713,9 +796,9 @@ async function olFill(){
 }
 
 /* ---------- routing ---------- */
-const VIEWS = ["home","discover","mybooks","browse","taste","profile"];
+const VIEWS = ["home","discover","mybooks","browse","taste","profile","year"];
 const dirty = new Set(VIEWS); let current = null;
-const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","friend","incoming"];
+const ALLVIEWS = ["onboard","home","discover","mybooks","browse","taste","profile","year","friend","incoming"];
 function showOnly(v){ ALLVIEWS.forEach(k=>$("#v-"+k).hidden = k!==v); }
 function show(v){
   v = v || "";
@@ -737,6 +820,7 @@ function renderView(v){
   if(v==="browse"){ if(!$("#b-results")) renderBrowseControls(); renderBrowseResults(); }
   if(v==="taste") renderTaste();
   if(v==="profile") renderProfile();
+  if(v==="year") renderYear();
 }
 function changed(){
   recompute(); VIEWS.forEach(v=>dirty.add(v));
@@ -790,6 +874,7 @@ document.addEventListener("click", e=>{
   if(d.flane){ const s=fLanes().slice(); toggleIn(s,d.flane); FS.lanes=s; FS.preset=""; t.setAttribute("aria-pressed", s.includes(d.flane)); renderDiscoverResults(); return; }
   if(d.fmust){ toggleIn(FS.must,d.fmust); FS.preset=""; t.setAttribute("aria-pressed", FS.must.includes(d.fmust)); renderDiscoverResults(); return; }
   // my books
+  if(d.year){ YEAR = +d.year; renderYear(); return; }
   if(d.mbtab){ MB.tab=d.mbtab; MB.onlySparse=false; renderMyBooks(); return; }
   // browse
   if(d.blane){ toggleIn(BS.lanes,d.blane); t.setAttribute("aria-pressed",BS.lanes.includes(d.blane)); BS.limit=60; renderBrowseResults(); return; }
@@ -815,6 +900,9 @@ document.addEventListener("click", e=>{
   if(act==="showsparse"){ MB.tab="read"; MB.onlySparse=true; dirty.add("mybooks"); location.hash="mybooks"; if(current==="mybooks") renderMyBooks(); }
   if(act==="allbooks"){ MB.onlySparse=false; renderMyBooks(); }
   if(act==="backup") downloadBackup();
+  if(act==="goaledit"){ GOALEDIT = true; renderHome(); const i=$("#goal-n"); if(i) i.focus(); }
+  if(act==="goalsave"){ const n = Math.round(+($("#goal-n")||{}).value); if(n>=1 && n<=500){ (S.profile.goals ||= {})[new Date().getFullYear()] = n; GOALEDIT = false; save(); changed(); toast(`Goal set: ${n} books.`); } else toast("Pick a number from 1 to 500."); }
+  if(act==="goaloff"){ if(S.profile.goals) delete S.profile.goals[new Date().getFullYear()]; GOALEDIT = false; S.hints["goal"+new Date().getFullYear()] = today(); save(); changed(); }
   if(act==="mktransfer") makeLink("transfer");
   if(act==="mkfriend") makeLink("friend");
   if(act==="gotransfer" || act==="gofriend"){ const kind = act==="gotransfer"?"transfer":"friend"; dirty.add("profile"); if(current!=="profile") location.hash="profile"; makeLink(kind); }
