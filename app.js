@@ -1004,7 +1004,7 @@ function importGoodreads(text){
     if(!e.fmt) delete e.fmt;
     S.shelf[b.id] = e;
   });
-  save(); changed();
+  adoptCatalogBooks(); save(); changed();
   return {n, matched, added};
 }
 async function olFill(){
@@ -1370,6 +1370,23 @@ document.addEventListener("pointerover", e=>{ const c=e.target.closest&&e.target
 document.addEventListener("pointermove", e=>{ if(!tip.hidden){ tip.style.left=Math.min(e.clientX+12, innerWidth-tip.offsetWidth-8)+"px"; tip.style.top=(e.clientY+14)+"px"; } });
 let rz; window.addEventListener("resize", ()=>{ clearTimeout(rz); rz=setTimeout(()=>{ if(current==="taste") scatter(); },150); });
 
+/* When the catalog gains a book someone had added by hand (or from Goodreads), move their entry onto
+   the catalog version so it gets full details, a fit score and a cover. Ratings, dates and notes come along. */
+function adoptCatalogBooks(){
+  let moved = 0;
+  for(const [cid, b] of Object.entries(S.custom)){
+    const hit = CATIDX[normT(b.t)+"|"+lastName(b.a)]; if(!hit || hit.id===cid) continue;
+    const e = S.shelf[cid];
+    if(e && !S.shelf[hit.id]) S.shelf[hit.id] = e;
+    delete S.shelf[cid]; delete S.custom[cid];
+    S.profile.favorites = S.profile.favorites.map(f=>f===cid?hit.id:f);
+    if(S.next===cid) S.next = hit.id;
+    moved++;
+  }
+  if(moved) save();
+  return moved;
+}
+adoptCatalogBooks();
 recompute();
 protect();
 show(location.hash.slice(1) || "home");
